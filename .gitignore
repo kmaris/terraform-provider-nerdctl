@@ -1,0 +1,32 @@
+# Provider binary
+terraform-provider-nerdctl
+
+# Terraform state and working dirs (from running examples/)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+crash.log
+
+# Go build/test artifacts
+*.test
+*.out
+dist/
+__debug_bin*
+
+# Local tool config
+.claude/settings.local.json
+.terraformrc
+terraform.rc
+
+# Environment files
+.env
+.env.*
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
