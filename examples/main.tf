@@ -6,9 +6,11 @@ terraform {
   }
 }
 
+# Rootless containerd on a remote host, connecting as the default ssh user.
+# Requires lingering on the host (`loginctl enable-linger <user>`) so
+# containerd survives ssh sessions and reboots.
 provider "nerdctl" {
-  host = "ssh://user@admin0.ned.kmaris.net:22"
-  sudo = true
+  host = "ssh://containers.example.com"
 }
 
 resource "nerdctl_image" "traefik" {

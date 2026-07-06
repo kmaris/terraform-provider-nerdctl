@@ -43,7 +43,7 @@ Then point Terraform at your `$GOBIN` with a `dev_overrides` block in
 ```hcl
 provider_installation {
   dev_overrides {
-    "kmaris/nerdctl" = "/Users/kmaris/src/go/bin" # your $GOPATH/bin
+    "kmaris/nerdctl" = "/home/you/go/bin" # your $GOPATH/bin or $GOBIN
   }
   direct {}
 }
