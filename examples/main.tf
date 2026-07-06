@@ -22,6 +22,16 @@ provider "nerdctl" {
   host = var.host
 }
 
+# The default bridge network always exists; reading it exercises the data
+# sources during plan.
+data "nerdctl_network" "bridge" {
+  name = "bridge"
+}
+
+output "bridge_subnet" {
+  value = data.nerdctl_network.bridge.subnet
+}
+
 resource "nerdctl_image" "traefik" {
   name = "traefik:v3"
 }

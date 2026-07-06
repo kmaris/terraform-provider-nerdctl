@@ -242,7 +242,12 @@ func (r *networkResource) ImportState(ctx context.Context, req resource.ImportSt
 }
 
 func (r *networkResource) inspect(ctx context.Context, name string) (*networkInspect, error) {
-	out, err := r.client.Run(ctx, "network", "inspect", name)
+	return inspectNetwork(ctx, r.client, name)
+}
+
+// inspectNetwork looks up a network, shared by the resource and data source.
+func inspectNetwork(ctx context.Context, client *nerdctl.Client, name string) (*networkInspect, error) {
+	out, err := client.Run(ctx, "network", "inspect", name)
 	if err != nil {
 		return nil, err
 	}

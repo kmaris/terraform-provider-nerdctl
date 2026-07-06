@@ -130,7 +130,12 @@ func (r *imageResource) ImportState(ctx context.Context, req resource.ImportStat
 }
 
 func (r *imageResource) imageID(ctx context.Context, name string) (string, error) {
-	out, err := r.client.Run(ctx, "image", "inspect", name)
+	return imageID(ctx, r.client, name)
+}
+
+// imageID looks up an image's digest, shared by the resource and data source.
+func imageID(ctx context.Context, client *nerdctl.Client, name string) (string, error) {
+	out, err := client.Run(ctx, "image", "inspect", name)
 	if err != nil {
 		return "", err
 	}

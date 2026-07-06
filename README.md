@@ -144,6 +144,25 @@ resource "nerdctl_container" "app" {
 Each `volumes` entry takes exactly one of `host_path` (bind mount) or
 `volume_name` (named volume).
 
+## Data sources
+
+`nerdctl_image`, `nerdctl_volume`, and `nerdctl_network` read existing
+objects by name, failing when absent:
+
+```hcl
+data "nerdctl_network" "bridge" {
+  name = "bridge" # exports id, subnet, gateway, labels
+}
+
+data "nerdctl_image" "existing" {
+  name = "nginx:alpine" # exports id (digest)
+}
+
+data "nerdctl_volume" "existing" {
+  name = "app_config" # exports mountpoint
+}
+```
+
 ## Importing existing objects
 
 All three resources import by name (the image reference for images):

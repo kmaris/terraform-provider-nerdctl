@@ -107,5 +107,9 @@ func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource 
 }
 
 func (p *nerdctlProvider) DataSources(context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewImageDataSource,
+		NewVolumeDataSource,
+		NewNetworkDataSource,
+	}
 }

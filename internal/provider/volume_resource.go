@@ -129,7 +129,13 @@ func (r *volumeResource) ImportState(ctx context.Context, req resource.ImportSta
 }
 
 func (r *volumeResource) mountpoint(ctx context.Context, name string) (string, error) {
-	out, err := r.client.Run(ctx, "volume", "inspect", name)
+	return volumeMountpoint(ctx, r.client, name)
+}
+
+// volumeMountpoint looks up a volume's backing directory, shared by the
+// resource and data source.
+func volumeMountpoint(ctx context.Context, client *nerdctl.Client, name string) (string, error) {
+	out, err := client.Run(ctx, "volume", "inspect", name)
 	if err != nil {
 		return "", err
 	}
