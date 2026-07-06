@@ -28,6 +28,13 @@ const inspectFixture = `[
       {"Type": "volume", "Name": "9d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f90aabb", "Source": "/var/lib/nerdctl/1935db59/volumes/default/9d1e.../_data", "Destination": "/anon", "Mode": "", "RW": true, "Propagation": ""}
     ],
     "Config": {
+      "Env": [
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NGINX_VERSION=1.29.0",
+        "FOO=bar",
+        "OVERRIDE=user-value",
+        "HOSTNAME=1f5a2b3c4d5e"
+      ],
       "Labels": {
         "some.label": "value",
         "maintainer": "NGINX Docker Maintainers <docker-maint@nginx.com>",
@@ -117,16 +124,38 @@ func TestInspectUserLabels(t *testing.T) {
 	}
 }
 
-func TestParseImageLabels(t *testing.T) {
-	labels, err := parseImageLabels(`[{"Config": {"Labels": {"maintainer": "x"}}}]`)
+func TestParseImageInspect(t *testing.T) {
+	img, err := parseImageInspect(`[{"Config": {"Labels": {"maintainer": "x"}, "Env": ["NGINX_VERSION=1.29.0"]}}]`)
 	if err != nil {
-		t.Fatalf("parseImageLabels: %v", err)
+		t.Fatalf("parseImageInspect: %v", err)
 	}
-	if !reflect.DeepEqual(labels, map[string]string{"maintainer": "x"}) {
-		t.Errorf("labels = %v", labels)
+	if !reflect.DeepEqual(img.Config.Labels, map[string]string{"maintainer": "x"}) {
+		t.Errorf("labels = %v", img.Config.Labels)
 	}
-	if _, err := parseImageLabels("[]"); err == nil {
+	if !reflect.DeepEqual(img.Config.Env, []string{"NGINX_VERSION=1.29.0"}) {
+		t.Errorf("env = %v", img.Config.Env)
+	}
+	if _, err := parseImageInspect("[]"); err == nil {
 		t.Error("want error for empty result")
+	}
+}
+
+func TestInspectUserEnv(t *testing.T) {
+	info := mustParseFixture(t)
+	imageEnv := []string{
+		"NGINX_VERSION=1.29.0",
+		"OVERRIDE=image-value",
+	}
+	// Image entries with unchanged values are subtracted; user overrides are
+	// kept. PATH and HOSTNAME stay here — refreshEnv decides on those.
+	want := map[string]string{
+		"PATH":     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"FOO":      "bar",
+		"OVERRIDE": "user-value",
+		"HOSTNAME": "1f5a2b3c4d5e",
+	}
+	if got := info.userEnv(imageEnv); !reflect.DeepEqual(got, want) {
+		t.Errorf("userEnv() = %v, want %v", got, want)
 	}
 }
 

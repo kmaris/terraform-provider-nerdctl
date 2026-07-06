@@ -31,6 +31,7 @@ type containerInspect struct {
 	} `json:"Mounts"`
 	Config struct {
 		Labels map[string]string `json:"Labels"`
+		Env    []string          `json:"Env"`
 	} `json:"Config"`
 	NetworkSettings struct {
 		Ports map[string][]struct {
@@ -86,21 +87,49 @@ func (ci *containerInspect) userLabels(imageLabels map[string]string) map[string
 	return out
 }
 
-// parseImageLabels extracts Config.Labels from `nerdctl image inspect`
-// output, for subtracting image-defined labels from container labels.
-func parseImageLabels(out string) (map[string]string, error) {
-	var infos []struct {
-		Config struct {
-			Labels map[string]string `json:"Labels"`
-		} `json:"Config"`
-	}
+// imageInspect is the subset of `nerdctl image inspect` output the provider
+// reads: the image-defined labels and env to subtract from container state.
+type imageInspect struct {
+	Config struct {
+		Labels map[string]string `json:"Labels"`
+		Env    []string          `json:"Env"`
+	} `json:"Config"`
+}
+
+func parseImageInspect(out string) (*imageInspect, error) {
+	var infos []imageInspect
 	if err := json.Unmarshal([]byte(out), &infos); err != nil {
 		return nil, fmt.Errorf("parsing image inspect output: %w", err)
 	}
 	if len(infos) == 0 {
 		return nil, fmt.Errorf("empty image inspect result")
 	}
-	return infos[0].Config.Labels, nil
+	return &infos[0], nil
+}
+
+// userEnv recovers -e variables from the spec env, which merges runtime
+// defaults, image ENV entries, and user variables. Image entries whose
+// value the user did not override are subtracted. Runtime-injected PATH
+// and HOSTNAME are left in: only prior state can tell them apart from
+// user config, so refreshEnv handles them.
+func (ci *containerInspect) userEnv(imageEnv []string) map[string]string {
+	img := map[string]string{}
+	for _, e := range imageEnv {
+		k, v, _ := strings.Cut(e, "=")
+		img[k] = v
+	}
+	out := map[string]string{}
+	for _, e := range ci.Config.Env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		if iv, exists := img[k]; exists && iv == v {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // portModels recovers published ports from NetworkSettings.Ports, which

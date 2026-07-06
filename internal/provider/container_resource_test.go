@@ -19,6 +19,7 @@ func minimalContainerModel() containerResourceModel {
 		Restart:  types.StringValue("unless-stopped"),
 		Command:  types.ListNull(types.StringType),
 		Networks: types.ListNull(types.StringType),
+		Env:      types.MapNull(types.StringType),
 		Ports:    types.ListNull(portObjectType),
 		Labels:   types.MapNull(types.StringType),
 		Volumes:  types.ListNull(volumeObjectType),
@@ -63,6 +64,14 @@ func TestBuildRunArgsFull(t *testing.T) {
 		t.Fatalf("building labels: %v", diags)
 	}
 	plan.Labels = labels
+	env, diags := types.MapValueFrom(context.Background(), types.StringType, map[string]string{
+		"B_VAR": "2",
+		"A_VAR": "1",
+	})
+	if diags.HasError() {
+		t.Fatalf("building env: %v", diags)
+	}
+	plan.Env = env
 	plan.Volumes = mustList(t, volumeObjectType, []volumeMountModel{
 		{
 			ContainerPath: types.StringValue("/etc/app"),
@@ -91,6 +100,8 @@ func TestBuildRunArgsFull(t *testing.T) {
 		"-p", "69:69/udp",
 		"--label", "a.label=1", // map keys must come out sorted, not in map order
 		"--label", "b.label=2",
+		"-e", "A_VAR=1",
+		"-e", "B_VAR=2",
 		"-v", "/srv/app:/etc/app:ro",
 		"-v", "app_config:/data",
 		"traefik:v3",
@@ -98,6 +109,62 @@ func TestBuildRunArgsFull(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+func TestRefreshEnvIgnoresRuntimeDefaults(t *testing.T) {
+	// A container with no user env still carries the containerd default
+	// PATH and an injected HOSTNAME in its spec; state must stay null.
+	info := &containerInspect{}
+	info.Config.Env = []string{"PATH=" + defaultSpecPathValue, "HOSTNAME=abc123"}
+	state := minimalContainerModel()
+
+	if diags := refreshEnv(context.Background(), &state, info, nil); diags.HasError() {
+		t.Fatalf("refreshEnv: %v", diags)
+	}
+	if !state.Env.IsNull() {
+		t.Errorf("state.Env = %v, want null", state.Env)
+	}
+}
+
+func TestRefreshEnvKeepsManagedRuntimeKeys(t *testing.T) {
+	// When the user manages PATH (even at the default value), it is kept
+	// and compares equal — no dirtying, no dropping.
+	info := &containerInspect{}
+	info.Config.Env = []string{"PATH=" + defaultSpecPathValue}
+	state := minimalContainerModel()
+	env, diags := types.MapValueFrom(context.Background(), types.StringType, map[string]string{"PATH": defaultSpecPathValue})
+	if diags.HasError() {
+		t.Fatalf("building env: %v", diags)
+	}
+	state.Env = env
+
+	if diags := refreshEnv(context.Background(), &state, info, nil); diags.HasError() {
+		t.Fatalf("refreshEnv: %v", diags)
+	}
+	got := map[string]string{}
+	if diags := state.Env.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("reading env: %v", diags)
+	}
+	if want := map[string]string{"PATH": defaultSpecPathValue}; !reflect.DeepEqual(got, want) {
+		t.Errorf("state.Env = %v, want %v", got, want)
+	}
+}
+
+func TestRefreshEnvDetectsDrift(t *testing.T) {
+	info := &containerInspect{}
+	info.Config.Env = []string{"FOO=bar"}
+	state := minimalContainerModel()
+
+	if diags := refreshEnv(context.Background(), &state, info, nil); diags.HasError() {
+		t.Fatalf("refreshEnv: %v", diags)
+	}
+	got := map[string]string{}
+	if diags := state.Env.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("reading env: %v", diags)
+	}
+	if want := map[string]string{"FOO": "bar"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("state.Env = %v, want %v", got, want)
 	}
 }
 

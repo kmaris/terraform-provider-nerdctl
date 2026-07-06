@@ -112,6 +112,10 @@ resource "nerdctl_container" "app" {
 
   networks = [nerdctl_network.app.name] # default bridge when unset
 
+  env = {
+    SOME_VAR = "value"
+  }
+
   ports = [
     { internal = 80, external = 8080 },            # protocol defaults to tcp
     { internal = 69, external = 69, protocol = "udp" },

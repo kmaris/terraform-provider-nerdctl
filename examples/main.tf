@@ -9,16 +9,25 @@ terraform {
 # Rootless containerd on a remote host, connecting as the default ssh user.
 # Requires lingering on the host (`loginctl enable-linger <user>`) so
 # containerd survives ssh sessions and reboots.
+#
+# Set the real host in an untracked examples/local.auto.tfvars:
+#   host = "ssh://your-host.example.com"
+variable "host" {
+  description = "Remote host to run nerdctl on, as ssh://[user@]host[:port]. Set \"\" to run nerdctl locally."
+  type        = string
+  default     = "ssh://containers.example.com"
+}
+
 provider "nerdctl" {
-  host = "ssh://containers.example.com"
+  host = var.host
 }
 
 resource "nerdctl_image" "traefik" {
   name = "traefik:v3"
 }
 
-resource "nerdctl_volume" "netbootxyz_config" {
-  name = "netbootxyz_config"
+resource "nerdctl_volume" "traefik_config" {
+  name = "traefik_config"
 }
 
 resource "nerdctl_container" "traefik" {
@@ -32,26 +41,20 @@ resource "nerdctl_container" "traefik" {
     "--entrypoints.websecure.address=:443",
   ]
 
+  # Traefik also reads TRAEFIK_* static config from the environment; after
+  # apply, a re-plan must show no env drift.
+  env = {
+    TRAEFIK_LOG_LEVEL = "INFO"
+    TZ                = "UTC"
+  }
+
   ports = [
-    { internal = 80, external = 80 },
-    { internal = 443, external = 443 },
+    { internal = 80, external = 8080 },
+    { internal = 443, external = 8443 },
   ]
 
   volumes = [
-    { container_path = "/etc/traefik/dynamic", host_path = "/etc/traefik/dynamic", read_only = true },
+    { container_path = "/etc/traefik/dynamic", volume_name = nerdctl_volume.traefik_config.name, read_only = true },
   ]
 }
 
-resource "nerdctl_container" "netbootxyz" {
-  name  = "netbootxyz"
-  image = "ghcr.io/netbootxyz/netbootxyz"
-
-  ports = [
-    { internal = 69, external = 69, protocol = "udp" },
-    { internal = 80, external = 8081 },
-  ]
-
-  volumes = [
-    { container_path = "/config", volume_name = nerdctl_volume.netbootxyz_config.name },
-  ]
-}

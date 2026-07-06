@@ -62,6 +62,7 @@ type containerResourceModel struct {
 	Command  types.List   `tfsdk:"command"`
 	Restart  types.String `tfsdk:"restart"`
 	Networks types.List   `tfsdk:"networks"`
+	Env      types.Map    `tfsdk:"env"`
 	Ports    types.List   `tfsdk:"ports"`
 	Labels   types.Map    `tfsdk:"labels"`
 	Volumes  types.List   `tfsdk:"volumes"`
@@ -119,6 +120,12 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Optional:      true,
 				Description:   "Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"env": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Environment variables passed with `-e`. Variables the image already defines with the same value are treated as image-provided, not managed.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
 			},
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
@@ -244,17 +251,20 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// command is deliberately left untouched: the OCI spec merges entrypoint
 	// and command, so it cannot be recovered from inspect output.
 
-	// Image labels merge into container labels; fetch them so they can be
-	// subtracted. Best-effort: without them (image removed out-of-band),
-	// image-defined labels would surface as drift.
+	// Image labels and env merge into the container's; fetch them so they
+	// can be subtracted. Best-effort: without them (image removed
+	// out-of-band), image-defined entries would surface as drift.
 	imageLabels := map[string]string{}
+	var imageEnv []string
 	if imgOut, err := r.client.Run(ctx, "image", "inspect", info.Image); err == nil {
-		if parsed, err := parseImageLabels(imgOut); err == nil {
-			imageLabels = parsed
+		if parsed, err := parseImageInspect(imgOut); err == nil {
+			imageLabels = parsed.Config.Labels
+			imageEnv = parsed.Config.Env
 		}
 	}
 
 	resp.Diagnostics.Append(refreshLabels(ctx, &state, info, imageLabels)...)
+	resp.Diagnostics.Append(refreshEnv(ctx, &state, info, imageEnv)...)
 	resp.Diagnostics.Append(refreshNetworks(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshPorts(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshVolumes(ctx, &state, info)...)
@@ -289,6 +299,45 @@ func refreshLabels(ctx context.Context, state *containerResourceModel, info *con
 	m, d := types.MapValueFrom(ctx, types.StringType, actual)
 	diags.Append(d...)
 	state.Labels = m
+	return diags
+}
+
+// defaultSpecPathValue is containerd's PATH when neither the image nor the
+// user sets one.
+const defaultSpecPathValue = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// refreshEnv overwrites state env when the container's user variables
+// differ. Runtime-injected entries are indistinguishable from user config
+// except by prior state, so the default PATH and HOSTNAME are ignored
+// unless the state already manages those keys.
+func refreshEnv(ctx context.Context, state *containerResourceModel, info *containerInspect, imageEnv []string) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.userEnv(imageEnv)
+
+	current := map[string]string{}
+	if !state.Env.IsNull() {
+		diags.Append(state.Env.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if _, managed := current["PATH"]; !managed && actual["PATH"] == defaultSpecPathValue {
+		delete(actual, "PATH")
+	}
+	if _, managed := current["HOSTNAME"]; !managed {
+		delete(actual, "HOSTNAME")
+	}
+
+	if maps.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Env = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.Env = m
 	return diags
 }
 
@@ -450,6 +499,22 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		sort.Strings(keys)
 		for _, k := range keys {
 			args = append(args, "--label", k+"="+labels[k])
+		}
+	}
+
+	if !plan.Env.IsNull() {
+		env := map[string]string{}
+		diags.Append(plan.Env.ElementsAs(ctx, &env, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		keys := make([]string, 0, len(env))
+		for k := range env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "-e", k+"="+env[k])
 		}
 	}
 
