@@ -16,6 +16,10 @@ import (
 type Config struct {
 	// Host is empty for local execution, or "ssh://[user@]host[:port]".
 	Host string
+	// SSHOpts are extra ssh CLI options for remote hosts, e.g.
+	// []string{"-i", "~/.ssh/deploy_key", "-J", "bastion"}. Mirrors the
+	// kreuzwerker/docker provider's ssh_opts.
+	SSHOpts []string
 	// NerdctlPath is the nerdctl binary on the target host. Defaults to "nerdctl".
 	NerdctlPath string
 	// Namespace is the containerd namespace. Defaults to "default".
@@ -52,7 +56,10 @@ func New(cfg Config) (*Client, error) {
 		if u.Scheme != "ssh" {
 			return nil, fmt.Errorf("host %q: only ssh:// hosts are supported", cfg.Host)
 		}
-		c.sshArgs = []string{"-o", "BatchMode=yes"}
+		// User options come first: ssh uses the first value it sees for an
+		// -o option, so ssh_opts can override the defaults below.
+		c.sshArgs = append(c.sshArgs, cfg.SSHOpts...)
+		c.sshArgs = append(c.sshArgs, "-o", "BatchMode=yes", "-o", "ConnectTimeout=30")
 		if p := u.Port(); p != "" {
 			c.sshArgs = append(c.sshArgs, "-p", p)
 		}
@@ -66,9 +73,9 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// Run executes nerdctl with the given arguments and returns trimmed stdout.
-// Failures include stderr in the error message.
-func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
+// argv returns the executable and argument list Run will execute for the
+// given nerdctl arguments, after sudo, namespace, and ssh wrapping.
+func (c *Client) argv(args ...string) (string, []string) {
 	full := make([]string, 0, len(args)+4)
 	if c.sudo {
 		full = append(full, "sudo", "-n")
@@ -76,35 +83,48 @@ func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
 	full = append(full, c.nerdctlPath, "--namespace", c.namespace)
 	full = append(full, args...)
 
-	var cmd *exec.Cmd
 	if c.sshArgs != nil {
 		// The remote shell re-splits the command line, so quote each argument.
 		quoted := make([]string, len(full))
 		for i, a := range full {
 			quoted[i] = shellQuote(a)
 		}
-		sshArgs := append(append([]string{}, c.sshArgs...), strings.Join(quoted, " "))
-		cmd = exec.CommandContext(ctx, "ssh", sshArgs...)
-	} else {
-		cmd = exec.CommandContext(ctx, full[0], full[1:]...)
+		// Non-interactive ssh PATHs often lack the sbin dirs (Debian-family
+		// defaults) where iptables lives, which nerdctl needs for CNI. The
+		// POSIX prefix assignment scopes the fix to this command.
+		remote := `PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin" ` + strings.Join(quoted, " ")
+		return "ssh", append(append([]string{}, c.sshArgs...), remote)
 	}
+	return full[0], full[1:]
+}
+
+// Run executes nerdctl with the given arguments and returns trimmed stdout.
+// Failures include stderr in the error message.
+func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
+	name, argv := c.argv(args...)
+	cmd := exec.CommandContext(ctx, name, argv...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s: %w: %s", strings.Join(full, " "), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(argv, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
 
 // NotFound reports whether an error from Run looks like a missing-object
-// error, so callers can distinguish "gone" from "broken".
+// error, so callers can distinguish "gone" from "broken". A missing nerdctl
+// binary also says "not found" but means the host is broken, not the object —
+// treating it as gone would silently drop resources from state.
 func NotFound(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "command not found") || strings.Contains(msg, "executable file not found") {
+		return false
+	}
 	return strings.Contains(msg, "no such") || strings.Contains(msg, "not found")
 }
 

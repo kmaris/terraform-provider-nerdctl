@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	_ resource.Resource              = (*imageResource)(nil)
-	_ resource.ResourceWithConfigure = (*imageResource)(nil)
+	_ resource.Resource                = (*imageResource)(nil)
+	_ resource.ResourceWithConfigure   = (*imageResource)(nil)
+	_ resource.ResourceWithImportState = (*imageResource)(nil)
 )
 
 func NewImageResource() resource.Resource { return &imageResource{} }
@@ -119,6 +121,12 @@ func (r *imageResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	if _, err := r.client.Run(ctx, "rmi", state.Name.ValueString()); err != nil && !nerdctl.NotFound(err) {
 		resp.Diagnostics.AddError("Failed to remove image", err.Error())
 	}
+}
+
+// ImportState imports by image reference, e.g.
+// `terraform import nerdctl_image.traefik traefik:v3`.
+func (r *imageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 func (r *imageResource) imageID(ctx context.Context, name string) (string, error) {

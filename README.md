@@ -16,11 +16,18 @@ reads.
 replacement (the docker provider does this for most attributes too). Known
 limitations:
 
-- No drift detection on container attributes; `Read` only checks existence.
-- No `terraform import` support yet.
+- `command` drift is not detected: the OCI spec merges entrypoint and
+  command, so it cannot be recovered from inspect output. All other container
+  attributes (image, restart, ports, labels, volumes) are refreshed on read.
 - No `nerdctl_network` resource yet (containers run on the default bridge).
 - Remote hosts need non-interactive ssh (key auth in your agent) and, for
   rootful containerd as a non-root user, passwordless sudo (`sudo = true`).
+- For rootless containerd on remote hosts, enable lingering
+  (`loginctl enable-linger <user>`) so containerd outlives ssh sessions —
+  otherwise containers stop when the last session closes and provider calls
+  race containerd's startup. The provider appends the sbin dirs to the remote
+  `PATH` (Debian-family non-interactive ssh omits them) so CNI can find
+  iptables; a POSIX login shell is assumed on the remote host.
 
 ## Build and use locally
 
@@ -34,7 +41,7 @@ Then point Terraform at your `$GOBIN` with a `dev_overrides` block in
 ```hcl
 provider_installation {
   dev_overrides {
-    "kmaris/nerdctl" = "/Users/kmaris/go/bin"
+    "kmaris/nerdctl" = "/Users/kmaris/src/go/bin" # your $GOPATH/bin
   }
   direct {}
 }
@@ -45,11 +52,15 @@ provider_installation {
 ```hcl
 provider "nerdctl" {
   host         = "ssh://user@host:22" # omit to run nerdctl locally
+  ssh_opts     = ["-i", "~/.ssh/deploy_key"] # extra ssh options (docker provider shape)
   sudo         = true                 # run nerdctl under `sudo -n`
   namespace    = "default"            # containerd namespace
   nerdctl_path = "nerdctl"            # binary path on the target host
 }
 ```
+
+ssh connections run in batch mode with a 30s connect timeout; entries in
+`ssh_opts` take precedence over those defaults.
 
 ## Resources
 
@@ -98,6 +109,22 @@ resource "nerdctl_container" "app" {
 
 Each `volumes` entry takes exactly one of `host_path` (bind mount) or
 `volume_name` (named volume).
+
+## Importing existing objects
+
+All three resources import by name (the image reference for images):
+
+```sh
+terraform import nerdctl_image.traefik traefik:v3
+terraform import nerdctl_volume.config app_config
+terraform import nerdctl_container.app app
+```
+
+Container import recovers every attribute except `command` (see limitations
+above) — if the container was started with arguments, set `command` in config
+to match before the next apply, or the plan will propose a replacement.
+Anonymous volumes from image `VOLUME` directives are not imported; they are
+image-implied, not configuration.
 
 Note that Traefik's docker label discovery does not work against containerd —
 there is no docker socket to watch. Labels are still applied to containers,

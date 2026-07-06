@@ -20,6 +20,7 @@ type nerdctlProvider struct {
 
 type nerdctlProviderModel struct {
 	Host        types.String `tfsdk:"host"`
+	SSHOpts     types.List   `tfsdk:"ssh_opts"`
 	NerdctlPath types.String `tfsdk:"nerdctl_path"`
 	Namespace   types.String `tfsdk:"namespace"`
 	Sudo        types.Bool   `tfsdk:"sudo"`
@@ -44,6 +45,11 @@ func (p *nerdctlProvider) Schema(_ context.Context, _ provider.SchemaRequest, re
 				Optional:    true,
 				Description: "Remote host to run nerdctl on, as `ssh://[user@]host[:port]`. Requires non-interactive ssh (key auth). Runs nerdctl locally when unset.",
 			},
+			"ssh_opts": schema.ListAttribute{
+				ElementType: types.StringType,
+				Optional:    true,
+				Description: "Extra ssh CLI options for remote hosts, e.g. `[\"-i\", \"~/.ssh/deploy_key\", \"-J\", \"bastion\"]`. Same shape as the docker provider's `ssh_opts`.",
+			},
 			"nerdctl_path": schema.StringAttribute{
 				Optional:    true,
 				Description: "Path to the nerdctl binary on the target host. Defaults to `nerdctl`.",
@@ -67,8 +73,17 @@ func (p *nerdctlProvider) Configure(ctx context.Context, req provider.ConfigureR
 		return
 	}
 
+	var sshOpts []string
+	if !cfg.SSHOpts.IsNull() && !cfg.SSHOpts.IsUnknown() {
+		resp.Diagnostics.Append(cfg.SSHOpts.ElementsAs(ctx, &sshOpts, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	client, err := nerdctl.New(nerdctl.Config{
 		Host:        cfg.Host.ValueString(),
+		SSHOpts:     sshOpts,
 		NerdctlPath: cfg.NerdctlPath.ValueString(),
 		Namespace:   cfg.Namespace.ValueString(),
 		Sudo:        cfg.Sudo.ValueBool(),

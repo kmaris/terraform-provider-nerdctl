@@ -2,11 +2,17 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"maps"
+	"regexp"
 	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -15,14 +21,32 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/kmaris/terraform-provider-nerdctl/internal/nerdctl"
 )
 
+var restartPolicyRe = regexp.MustCompile(`^(no|always|unless-stopped|on-failure(:\d+)?)$`)
+
 var (
-	_ resource.Resource              = (*containerResource)(nil)
-	_ resource.ResourceWithConfigure = (*containerResource)(nil)
+	_ resource.Resource                = (*containerResource)(nil)
+	_ resource.ResourceWithConfigure   = (*containerResource)(nil)
+	_ resource.ResourceWithImportState = (*containerResource)(nil)
+)
+
+var (
+	portObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+		"internal": types.Int64Type,
+		"external": types.Int64Type,
+		"protocol": types.StringType,
+	}}
+	volumeObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+		"container_path": types.StringType,
+		"host_path":      types.StringType,
+		"volume_name":    types.StringType,
+		"read_only":      types.BoolType,
+	}}
 )
 
 func NewContainerResource() resource.Resource { return &containerResource{} }
@@ -82,8 +106,11 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Optional:      true,
 				Computed:      true,
 				Default:       stringdefault.StaticString("unless-stopped"),
-				Description:   "Restart policy handled by containerd's restart manager.",
+				Description:   "Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(restartPolicyRe, "must be no, always, unless-stopped, or on-failure[:max-retries]"),
+				},
 			},
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
@@ -96,15 +123,18 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"internal": schema.Int64Attribute{
-							Required: true,
+							Required:   true,
+							Validators: []validator.Int64{int64validator.Between(1, 65535)},
 						},
 						"external": schema.Int64Attribute{
-							Required: true,
+							Required:   true,
+							Validators: []validator.Int64{int64validator.Between(1, 65535)},
 						},
 						"protocol": schema.StringAttribute{
-							Optional: true,
-							Computed: true,
-							Default:  stringdefault.StaticString("tcp"),
+							Optional:   true,
+							Computed:   true,
+							Default:    stringdefault.StaticString("tcp"),
+							Validators: []validator.String{stringvalidator.OneOf("tcp", "udp", "sctp")},
 						},
 					},
 				},
@@ -120,6 +150,9 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 						},
 						"host_path": schema.StringAttribute{
 							Optional: true,
+							Validators: []validator.String{
+								stringvalidator.ExactlyOneOf(path.MatchRelative().AtParent().AtName("volume_name")),
+							},
 						},
 						"volume_name": schema.StringAttribute{
 							Optional: true,
@@ -174,8 +207,6 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	// Existence check only: run args aren't reliably recoverable from
-	// inspect output, so attribute drift is not detected yet.
 	out, err := r.client.Run(ctx, "container", "inspect", state.Name.ValueString())
 	if nerdctl.NotFound(err) {
 		resp.State.RemoveResource(ctx)
@@ -186,16 +217,112 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	var infos []struct {
-		ID string `json:"Id"`
-	}
-	if err := json.Unmarshal([]byte(out), &infos); err != nil || len(infos) == 0 {
-		resp.Diagnostics.AddError("Failed to parse container inspect output", out)
+	info, err := parseContainerInspect(out)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to parse container inspect output", err.Error())
 		return
 	}
-	state.ID = types.StringValue(infos[0].ID)
+
+	state.ID = types.StringValue(info.ID)
+
+	if normalizeImageRef(info.Image) != normalizeImageRef(state.Image.ValueString()) {
+		state.Image = types.StringValue(normalizeImageRef(info.Image))
+	}
+
+	if policy := info.restartPolicy(); policy != state.Restart.ValueString() {
+		state.Restart = types.StringValue(policy)
+	}
+
+	// command is deliberately left untouched: the OCI spec merges entrypoint
+	// and command, so it cannot be recovered from inspect output.
+
+	resp.Diagnostics.Append(refreshLabels(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshPorts(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshVolumes(ctx, &state, info)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// refreshLabels overwrites state labels when the container's user labels
+// differ. State is kept as-is on a semantic match so null vs empty and
+// map ordering never show as drift.
+func refreshLabels(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.userLabels()
+
+	current := map[string]string{}
+	if !state.Labels.IsNull() {
+		diags.Append(state.Labels.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if maps.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Labels = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.Labels = m
+	return diags
+}
+
+func refreshPorts(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual, err := info.portModels()
+	if err != nil {
+		diags.AddError("Failed to parse container ports", err.Error())
+		return diags
+	}
+
+	var current []portModel
+	if !state.Ports.IsNull() {
+		diags.Append(state.Ports.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if portSetsEqual(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Ports = types.ListNull(portObjectType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, portObjectType, actual)
+	diags.Append(d...)
+	state.Ports = l
+	return diags
+}
+
+func refreshVolumes(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.volumeMounts()
+
+	var current []volumeMountModel
+	if !state.Volumes.IsNull() {
+		diags.Append(state.Volumes.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if mountSetsEqual(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Volumes = types.ListNull(volumeObjectType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, volumeObjectType, actual)
+	diags.Append(d...)
+	state.Volumes = l
+	return diags
 }
 
 // Update is unreachable: every attribute requires replacement.
@@ -218,6 +345,14 @@ func (r *containerResource) Delete(ctx context.Context, req resource.DeleteReque
 	if _, err := r.client.Run(ctx, "rm", "-f", state.Name.ValueString()); err != nil && !nerdctl.NotFound(err) {
 		resp.Diagnostics.AddError("Failed to remove container", err.Error())
 	}
+}
+
+// ImportState imports by container name, e.g.
+// `terraform import nerdctl_container.app app`. Read recovers every
+// attribute except command, which is not present in inspect output — set it
+// in config to match the running container before applying.
+func (r *containerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, diag.Diagnostics) {

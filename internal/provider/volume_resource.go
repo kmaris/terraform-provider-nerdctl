@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	_ resource.Resource              = (*volumeResource)(nil)
-	_ resource.ResourceWithConfigure = (*volumeResource)(nil)
+	_ resource.Resource                = (*volumeResource)(nil)
+	_ resource.ResourceWithConfigure   = (*volumeResource)(nil)
+	_ resource.ResourceWithImportState = (*volumeResource)(nil)
 )
 
 func NewVolumeResource() resource.Resource { return &volumeResource{} }
@@ -118,6 +120,12 @@ func (r *volumeResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	if _, err := r.client.Run(ctx, "volume", "rm", state.Name.ValueString()); err != nil && !nerdctl.NotFound(err) {
 		resp.Diagnostics.AddError("Failed to remove volume", err.Error())
 	}
+}
+
+// ImportState imports by volume name, e.g.
+// `terraform import nerdctl_volume.config app_config`.
+func (r *volumeResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
 func (r *volumeResource) mountpoint(ctx context.Context, name string) (string, error) {
