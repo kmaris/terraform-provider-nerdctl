@@ -14,13 +14,14 @@ import (
 // everything optional is null.
 func minimalContainerModel() containerResourceModel {
 	return containerResourceModel{
-		Name:    types.StringValue("app"),
-		Image:   types.StringValue("traefik:v3"),
-		Restart: types.StringValue("unless-stopped"),
-		Command: types.ListNull(types.StringType),
-		Ports:   types.ListNull(portObjectType),
-		Labels:  types.MapNull(types.StringType),
-		Volumes: types.ListNull(volumeObjectType),
+		Name:     types.StringValue("app"),
+		Image:    types.StringValue("traefik:v3"),
+		Restart:  types.StringValue("unless-stopped"),
+		Command:  types.ListNull(types.StringType),
+		Networks: types.ListNull(types.StringType),
+		Ports:    types.ListNull(portObjectType),
+		Labels:   types.MapNull(types.StringType),
+		Volumes:  types.ListNull(volumeObjectType),
 	}
 }
 
@@ -49,6 +50,7 @@ func TestBuildRunArgsMinimal(t *testing.T) {
 func TestBuildRunArgsFull(t *testing.T) {
 	plan := minimalContainerModel()
 	plan.Command = mustList(t, types.StringType, []string{"--flag=value", "serve"})
+	plan.Networks = mustList(t, types.StringType, []string{"app-net", "other-net"})
 	plan.Ports = mustList(t, portObjectType, []portModel{
 		{Internal: types.Int64Value(80), External: types.Int64Value(8080), Protocol: types.StringValue("tcp")},
 		{Internal: types.Int64Value(69), External: types.Int64Value(69), Protocol: types.StringValue("udp")},
@@ -83,6 +85,8 @@ func TestBuildRunArgsFull(t *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "app",
 		"--restart", "unless-stopped",
+		"--net", "app-net",
+		"--net", "other-net",
 		"-p", "8080:80/tcp",
 		"-p", "69:69/udp",
 		"--label", "a.label=1", // map keys must come out sorted, not in map order

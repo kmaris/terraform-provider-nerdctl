@@ -151,6 +151,20 @@ func (ci *containerInspect) portModels() ([]portModel, error) {
 	return out, nil
 }
 
+// networks recovers the networks the container was attached to from the
+// nerdctl/networks label, in --net order. Nil when the label is missing.
+func (ci *containerInspect) networks() []string {
+	raw := ci.Config.Labels["nerdctl/networks"]
+	if raw == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil
+	}
+	return names
+}
+
 // volumeMounts recovers bind and named-volume mounts, excluding anonymous
 // volumes created by image VOLUME directives (tracked in the
 // nerdctl/anonymous-volumes label), which are not part of the configuration.

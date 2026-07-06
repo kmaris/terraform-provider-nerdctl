@@ -40,6 +40,7 @@ const inspectFixture = `[
         "nerdctl/platform": "linux/amd64",
         "nerdctl/state-dir": "/var/lib/nerdctl/1935db59/containers/default/1f5a",
         "nerdctl/anonymous-volumes": "[\"9d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f90aabb\"]",
+        "nerdctl/networks": "[\"app-net\",\"other-net\"]",
         "nerdctl/ports": "[{\"HostPort\":8080,\"ContainerPort\":80,\"Protocol\":\"tcp\",\"HostIP\":\"0.0.0.0\"},{\"HostPort\":69,\"ContainerPort\":69,\"Protocol\":\"udp\",\"HostIP\":\"0.0.0.0\"}]"
       }
     },
@@ -165,6 +166,19 @@ func TestInspectVolumeMounts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("volumeMounts() = %v, want %v", got, want)
+	}
+}
+
+func TestInspectNetworks(t *testing.T) {
+	info := mustParseFixture(t)
+	if got, want := info.networks(), []string{"app-net", "other-net"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("networks() = %v, want %v", got, want)
+	}
+
+	// Missing label means nil, which refreshNetworks treats as default bridge.
+	bare := &containerInspect{}
+	if got := bare.networks(); got != nil {
+		t.Errorf("networks() = %v, want nil", got)
 	}
 }
 

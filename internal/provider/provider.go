@@ -101,6 +101,7 @@ func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource 
 	return []func() resource.Resource{
 		NewImageResource,
 		NewVolumeResource,
+		NewNetworkResource,
 		NewContainerResource,
 	}
 }

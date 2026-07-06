@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -56,14 +57,15 @@ type containerResource struct {
 }
 
 type containerResourceModel struct {
-	Name    types.String `tfsdk:"name"`
-	Image   types.String `tfsdk:"image"`
-	Command types.List   `tfsdk:"command"`
-	Restart types.String `tfsdk:"restart"`
-	Ports   types.List   `tfsdk:"ports"`
-	Labels  types.Map    `tfsdk:"labels"`
-	Volumes types.List   `tfsdk:"volumes"`
-	ID      types.String `tfsdk:"id"`
+	Name     types.String `tfsdk:"name"`
+	Image    types.String `tfsdk:"image"`
+	Command  types.List   `tfsdk:"command"`
+	Restart  types.String `tfsdk:"restart"`
+	Networks types.List   `tfsdk:"networks"`
+	Ports    types.List   `tfsdk:"ports"`
+	Labels   types.Map    `tfsdk:"labels"`
+	Volumes  types.List   `tfsdk:"volumes"`
+	ID       types.String `tfsdk:"id"`
 }
 
 type portModel struct {
@@ -111,6 +113,12 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(restartPolicyRe, "must be no, always, unless-stopped, or on-failure[:max-retries]"),
 				},
+			},
+			"networks": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 			},
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
@@ -247,6 +255,7 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	resp.Diagnostics.Append(refreshLabels(ctx, &state, info, imageLabels)...)
+	resp.Diagnostics.Append(refreshNetworks(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshPorts(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshVolumes(ctx, &state, info)...)
 	if resp.Diagnostics.HasError() {
@@ -280,6 +289,37 @@ func refreshLabels(ctx context.Context, state *containerResourceModel, info *con
 	m, d := types.MapValueFrom(ctx, types.StringType, actual)
 	diags.Append(d...)
 	state.Labels = m
+	return diags
+}
+
+// refreshNetworks overwrites state networks when the container's attached
+// networks differ. A null state matches the default bridge, so unconfigured
+// containers on the default network never show drift. Order is significant:
+// it determines interface order in the container.
+func refreshNetworks(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.networks()
+
+	if state.Networks.IsNull() && (len(actual) == 0 || (len(actual) == 1 && actual[0] == "bridge")) {
+		return diags
+	}
+	var current []string
+	if !state.Networks.IsNull() {
+		diags.Append(state.Networks.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if slices.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Networks = types.ListNull(types.StringType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.Networks = l
 	return diags
 }
 
@@ -372,6 +412,17 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 
 	if restart := plan.Restart.ValueString(); restart != "" {
 		args = append(args, "--restart", restart)
+	}
+
+	if !plan.Networks.IsNull() {
+		var networks []string
+		diags.Append(plan.Networks.ElementsAs(ctx, &networks, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, n := range networks {
+			args = append(args, "--net", n)
+		}
 	}
 
 	if !plan.Ports.IsNull() {

@@ -18,8 +18,10 @@ limitations:
 
 - `command` drift is not detected: the OCI spec merges entrypoint and
   command, so it cannot be recovered from inspect output. All other container
-  attributes (image, restart, ports, labels, volumes) are refreshed on read.
-- No `nerdctl_network` resource yet (containers run on the default bridge).
+  attributes (image, restart, networks, ports, labels, volumes) are refreshed
+  on read.
+- Network `driver` drift is not detected (`network inspect` does not report
+  it) and imported networks assume `bridge`.
 - Remote hosts need non-interactive ssh (key auth in your agent) and, for
   rootful containerd as a non-root user, passwordless sudo (`sudo = true`).
 - For rootless containerd on remote hosts, enable lingering
@@ -82,6 +84,23 @@ resource "nerdctl_volume" "config" {
 
 Exports `mountpoint`, the backing directory on the host.
 
+### `nerdctl_network`
+
+```hcl
+resource "nerdctl_network" "app" {
+  name    = "app-net"
+  driver  = "bridge"        # default; also macvlan, ipvlan
+  subnet  = "10.5.0.0/24"   # auto-assigned when unset
+  gateway = "10.5.0.1"      # requires subnet
+
+  labels = {
+    "some.label" = "value"
+  }
+}
+```
+
+Exports `id`, the CNI network ID.
+
 ### `nerdctl_container`
 
 ```hcl
@@ -90,6 +109,8 @@ resource "nerdctl_container" "app" {
   image   = nerdctl_image.traefik.name
   restart = "unless-stopped" # default
   command = ["--flag=value"]
+
+  networks = [nerdctl_network.app.name] # default bridge when unset
 
   ports = [
     { internal = 80, external = 8080 },            # protocol defaults to tcp
@@ -117,6 +138,7 @@ All three resources import by name (the image reference for images):
 ```sh
 terraform import nerdctl_image.traefik traefik:v3
 terraform import nerdctl_volume.config app_config
+terraform import nerdctl_network.app app-net
 terraform import nerdctl_container.app app
 ```
 
