@@ -236,7 +236,17 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	// command is deliberately left untouched: the OCI spec merges entrypoint
 	// and command, so it cannot be recovered from inspect output.
 
-	resp.Diagnostics.Append(refreshLabels(ctx, &state, info)...)
+	// Image labels merge into container labels; fetch them so they can be
+	// subtracted. Best-effort: without them (image removed out-of-band),
+	// image-defined labels would surface as drift.
+	imageLabels := map[string]string{}
+	if imgOut, err := r.client.Run(ctx, "image", "inspect", info.Image); err == nil {
+		if parsed, err := parseImageLabels(imgOut); err == nil {
+			imageLabels = parsed
+		}
+	}
+
+	resp.Diagnostics.Append(refreshLabels(ctx, &state, info, imageLabels)...)
 	resp.Diagnostics.Append(refreshPorts(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshVolumes(ctx, &state, info)...)
 	if resp.Diagnostics.HasError() {
@@ -249,9 +259,9 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 // refreshLabels overwrites state labels when the container's user labels
 // differ. State is kept as-is on a semantic match so null vs empty and
 // map ordering never show as drift.
-func refreshLabels(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+func refreshLabels(ctx context.Context, state *containerResourceModel, info *containerInspect, imageLabels map[string]string) diag.Diagnostics {
 	var diags diag.Diagnostics
-	actual := info.userLabels()
+	actual := info.userLabels(imageLabels)
 
 	current := map[string]string{}
 	if !state.Labels.IsNull() {

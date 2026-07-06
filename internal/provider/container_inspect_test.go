@@ -30,6 +30,9 @@ const inspectFixture = `[
     "Config": {
       "Labels": {
         "some.label": "value",
+        "maintainer": "NGINX Docker Maintainers <docker-maint@nginx.com>",
+        "org.opencontainers.image.title": "overridden by user",
+        "io.containerd.image.config.stop-signal": "SIGQUIT",
         "containerd.io/restart.policy": "unless-stopped",
         "containerd.io/restart.status": "running",
         "nerdctl/name": "app",
@@ -98,9 +101,31 @@ func TestInspectRestartPolicy(t *testing.T) {
 
 func TestInspectUserLabels(t *testing.T) {
 	info := mustParseFixture(t)
-	want := map[string]string{"some.label": "value"}
-	if got := info.userLabels(); !reflect.DeepEqual(got, want) {
+	imageLabels := map[string]string{
+		"maintainer":                     "NGINX Docker Maintainers <docker-maint@nginx.com>",
+		"org.opencontainers.image.title": "nginx",
+	}
+	// Image-defined labels and io.containerd.image.config.* are filtered;
+	// an image label whose value the user overrode is kept.
+	want := map[string]string{
+		"some.label":                     "value",
+		"org.opencontainers.image.title": "overridden by user",
+	}
+	if got := info.userLabels(imageLabels); !reflect.DeepEqual(got, want) {
 		t.Errorf("userLabels() = %v, want %v", got, want)
+	}
+}
+
+func TestParseImageLabels(t *testing.T) {
+	labels, err := parseImageLabels(`[{"Config": {"Labels": {"maintainer": "x"}}}]`)
+	if err != nil {
+		t.Fatalf("parseImageLabels: %v", err)
+	}
+	if !reflect.DeepEqual(labels, map[string]string{"maintainer": "x"}) {
+		t.Errorf("labels = %v", labels)
+	}
+	if _, err := parseImageLabels("[]"); err == nil {
+		t.Error("want error for empty result")
 	}
 }
 

@@ -66,17 +66,41 @@ func (ci *containerInspect) restartPolicy() string {
 	return "no"
 }
 
-// userLabels filters out labels nerdctl and containerd store their own
-// state under, leaving what the user passed via --label.
-func (ci *containerInspect) userLabels() map[string]string {
+// userLabels recovers what the user passed via --label. Container labels
+// also carry nerdctl/containerd bookkeeping, image-config derivations
+// (io.containerd.image.config.*), and the image's own labels merged in —
+// an image label only counts as user-set when its value was overridden.
+func (ci *containerInspect) userLabels(imageLabels map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range ci.Config.Labels {
-		if strings.HasPrefix(k, "nerdctl/") || strings.HasPrefix(k, "containerd.io/") {
+		if strings.HasPrefix(k, "nerdctl/") ||
+			strings.HasPrefix(k, "containerd.io/") ||
+			strings.HasPrefix(k, "io.containerd.image.config.") {
+			continue
+		}
+		if iv, ok := imageLabels[k]; ok && iv == v {
 			continue
 		}
 		out[k] = v
 	}
 	return out
+}
+
+// parseImageLabels extracts Config.Labels from `nerdctl image inspect`
+// output, for subtracting image-defined labels from container labels.
+func parseImageLabels(out string) (map[string]string, error) {
+	var infos []struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.Unmarshal([]byte(out), &infos); err != nil {
+		return nil, fmt.Errorf("parsing image inspect output: %w", err)
+	}
+	if len(infos) == 0 {
+		return nil, fmt.Errorf("empty image inspect result")
+	}
+	return infos[0].Config.Labels, nil
 }
 
 // portModels recovers published ports from NetworkSettings.Ports, which
