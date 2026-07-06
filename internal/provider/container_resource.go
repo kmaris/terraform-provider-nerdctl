@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -17,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -28,7 +31,10 @@ import (
 	"github.com/kmaris/terraform-provider-nerdctl/internal/nerdctl"
 )
 
-var restartPolicyRe = regexp.MustCompile(`^(no|always|unless-stopped|on-failure(:\d+)?)$`)
+var (
+	restartPolicyRe = regexp.MustCompile(`^(no|always|unless-stopped|on-failure(:\d+)?)$`)
+	memorySizeRe    = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[bkmgtBKMGT]?[bB]?$`)
+)
 
 var (
 	_ resource.Resource                = (*containerResource)(nil)
@@ -57,16 +63,22 @@ type containerResource struct {
 }
 
 type containerResourceModel struct {
-	Name     types.String `tfsdk:"name"`
-	Image    types.String `tfsdk:"image"`
-	Command  types.List   `tfsdk:"command"`
-	Restart  types.String `tfsdk:"restart"`
-	Networks types.List   `tfsdk:"networks"`
-	Env      types.Map    `tfsdk:"env"`
-	Ports    types.List   `tfsdk:"ports"`
-	Labels   types.Map    `tfsdk:"labels"`
-	Volumes  types.List   `tfsdk:"volumes"`
-	ID       types.String `tfsdk:"id"`
+	Name       types.String  `tfsdk:"name"`
+	Image      types.String  `tfsdk:"image"`
+	Command    types.List    `tfsdk:"command"`
+	Entrypoint types.String  `tfsdk:"entrypoint"`
+	Restart    types.String  `tfsdk:"restart"`
+	User       types.String  `tfsdk:"user"`
+	Workdir    types.String  `tfsdk:"workdir"`
+	Hostname   types.String  `tfsdk:"hostname"`
+	Memory     types.String  `tfsdk:"memory"`
+	Cpus       types.Float64 `tfsdk:"cpus"`
+	Networks   types.List    `tfsdk:"networks"`
+	Env        types.Map     `tfsdk:"env"`
+	Ports      types.List    `tfsdk:"ports"`
+	Labels     types.Map     `tfsdk:"labels"`
+	Volumes    types.List    `tfsdk:"volumes"`
+	ID         types.String  `tfsdk:"id"`
 }
 
 type portModel struct {
@@ -104,6 +116,40 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Optional:      true,
 				Description:   "Command and arguments passed after the image.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"entrypoint": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Overrides the image entrypoint binary. Like `command`, drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"user": schema.StringAttribute{
+				Optional:      true,
+				Description:   "User to run as, `user[:group]` by name or id. When unset, the image default applies and drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"workdir": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Working directory inside the container. Drift is not detected (absent from inspect output).",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"hostname": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Container hostname. When unset, the runtime default applies and drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"memory": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Memory limit as a docker-style size, e.g. `512m` or `2g`. Rootless hosts need cgroup v2 delegation.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(memorySizeRe, "must be a size like 512m, 2g, or 1073741824"),
+				},
+			},
+			"cpus": schema.Float64Attribute{
+				Optional:      true,
+				Description:   "CPU limit in cores, e.g. `1.5`. Rootless hosts need cgroup v2 delegation.",
+				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()},
+				Validators:    []validator.Float64{float64validator.AtLeast(0.01)},
 			},
 			"restart": schema.StringAttribute{
 				Optional:      true,
@@ -248,8 +294,18 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		state.Restart = types.StringValue(policy)
 	}
 
-	// command is deliberately left untouched: the OCI spec merges entrypoint
-	// and command, so it cannot be recovered from inspect output.
+	// command and entrypoint are deliberately left untouched: the OCI spec
+	// merges them, so neither is recoverable from inspect output. workdir is
+	// absent from inspect output entirely.
+
+	// user and hostname reflect image/runtime defaults when unset, which
+	// are indistinguishable from user config; track drift only when the
+	// config manages them.
+	refreshManagedString(&state.User, info.Config.User)
+	refreshManagedString(&state.Hostname, info.Config.Hostname)
+
+	resp.Diagnostics.Append(refreshMemory(&state, info)...)
+	refreshCpus(&state, info)
 
 	// Image labels and env merge into the container's; fetch them so they
 	// can be subtracted. Best-effort: without them (image removed
@@ -300,6 +356,71 @@ func refreshLabels(ctx context.Context, state *containerResourceModel, info *con
 	diags.Append(d...)
 	state.Labels = m
 	return diags
+}
+
+// refreshManagedString updates a string attribute from the inspected value,
+// but only when the config manages it — an unset attribute means the
+// image/runtime default applies, which inspect output cannot distinguish
+// from explicit configuration.
+func refreshManagedString(state *types.String, actual string) {
+	if state.IsNull() || actual == state.ValueString() {
+		return
+	}
+	if actual == "" {
+		*state = types.StringNull()
+		return
+	}
+	*state = types.StringValue(actual)
+}
+
+// refreshMemory compares semantically — "512m" in config equals 536870912
+// from inspect — and stores the byte count only on real drift.
+func refreshMemory(state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.HostConfig.Memory
+
+	if state.Memory.IsNull() {
+		if actual > 0 {
+			state.Memory = types.StringValue(strconv.FormatInt(actual, 10))
+		}
+		return diags
+	}
+	current, err := parseMemoryBytes(state.Memory.ValueString())
+	if err != nil {
+		diags.AddError("Invalid memory value in state", err.Error())
+		return diags
+	}
+	if current == actual {
+		return diags
+	}
+	if actual == 0 {
+		state.Memory = types.StringNull()
+		return diags
+	}
+	state.Memory = types.StringValue(strconv.FormatInt(actual, 10))
+	return diags
+}
+
+func refreshCpus(state *containerResourceModel, info *containerInspect) {
+	actual := info.cpus()
+	// Quota is quantized to 1/period (period is typically 100000), so
+	// round-tripped values can differ from the config by tiny fractions.
+	const tolerance = 1e-4
+
+	if state.Cpus.IsNull() {
+		if actual > 0 {
+			state.Cpus = types.Float64Value(actual)
+		}
+		return
+	}
+	if diff := state.Cpus.ValueFloat64() - actual; diff < tolerance && diff > -tolerance {
+		return
+	}
+	if actual == 0 {
+		state.Cpus = types.Float64Null()
+		return
+	}
+	state.Cpus = types.Float64Value(actual)
 }
 
 // defaultSpecPathValue is containerd's PATH when neither the image nor the
@@ -461,6 +582,24 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 
 	if restart := plan.Restart.ValueString(); restart != "" {
 		args = append(args, "--restart", restart)
+	}
+	if e := plan.Entrypoint.ValueString(); e != "" {
+		args = append(args, "--entrypoint", e)
+	}
+	if u := plan.User.ValueString(); u != "" {
+		args = append(args, "--user", u)
+	}
+	if w := plan.Workdir.ValueString(); w != "" {
+		args = append(args, "--workdir", w)
+	}
+	if h := plan.Hostname.ValueString(); h != "" {
+		args = append(args, "--hostname", h)
+	}
+	if m := plan.Memory.ValueString(); m != "" {
+		args = append(args, "--memory", m)
+	}
+	if !plan.Cpus.IsNull() {
+		args = append(args, "--cpus", strconv.FormatFloat(plan.Cpus.ValueFloat64(), 'f', -1, 64))
 	}
 
 	if !plan.Networks.IsNull() {

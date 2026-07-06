@@ -51,6 +51,12 @@ func TestBuildRunArgsMinimal(t *testing.T) {
 func TestBuildRunArgsFull(t *testing.T) {
 	plan := minimalContainerModel()
 	plan.Command = mustList(t, types.StringType, []string{"--flag=value", "serve"})
+	plan.Entrypoint = types.StringValue("/bin/app")
+	plan.User = types.StringValue("1000:1000")
+	plan.Workdir = types.StringValue("/srv")
+	plan.Hostname = types.StringValue("app-host")
+	plan.Memory = types.StringValue("512m")
+	plan.Cpus = types.Float64Value(1.5)
 	plan.Networks = mustList(t, types.StringType, []string{"app-net", "other-net"})
 	plan.Ports = mustList(t, portObjectType, []portModel{
 		{Internal: types.Int64Value(80), External: types.Int64Value(8080), Protocol: types.StringValue("tcp")},
@@ -94,6 +100,12 @@ func TestBuildRunArgsFull(t *testing.T) {
 	want := []string{
 		"run", "-d", "--name", "app",
 		"--restart", "unless-stopped",
+		"--entrypoint", "/bin/app",
+		"--user", "1000:1000",
+		"--workdir", "/srv",
+		"--hostname", "app-host",
+		"--memory", "512m",
+		"--cpus", "1.5",
 		"--net", "app-net",
 		"--net", "other-net",
 		"-p", "8080:80/tcp",
@@ -165,6 +177,85 @@ func TestRefreshEnvDetectsDrift(t *testing.T) {
 	}
 	if want := map[string]string{"FOO": "bar"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("state.Env = %v, want %v", got, want)
+	}
+}
+
+func TestRefreshManagedString(t *testing.T) {
+	// Unmanaged: image/runtime defaults are ignored.
+	s := types.StringNull()
+	refreshManagedString(&s, "nginx")
+	if !s.IsNull() {
+		t.Errorf("unmanaged attribute updated to %v, want null", s)
+	}
+
+	// Managed and matching: untouched.
+	s = types.StringValue("1000")
+	refreshManagedString(&s, "1000")
+	if s.ValueString() != "1000" {
+		t.Errorf("matching value changed to %v", s)
+	}
+
+	// Managed and drifted: updated.
+	refreshManagedString(&s, "2000")
+	if s.ValueString() != "2000" {
+		t.Errorf("drifted value = %v, want 2000", s)
+	}
+
+	// Managed but actual empty: nulled.
+	refreshManagedString(&s, "")
+	if !s.IsNull() {
+		t.Errorf("value = %v, want null", s)
+	}
+}
+
+func TestRefreshMemoryAndCpus(t *testing.T) {
+	info := &containerInspect{}
+	info.HostConfig.Memory = 512 << 20
+	info.HostConfig.CPUQuota = 150000
+	info.HostConfig.CPUPeriod = 100000
+
+	// Managed and semantically equal: state keeps its human-readable form.
+	state := minimalContainerModel()
+	state.Memory = types.StringValue("512m")
+	state.Cpus = types.Float64Value(1.5)
+	if diags := refreshMemory(&state, info); diags.HasError() {
+		t.Fatalf("refreshMemory: %v", diags)
+	}
+	refreshCpus(&state, info)
+	if state.Memory.ValueString() != "512m" {
+		t.Errorf("Memory = %v, want 512m kept", state.Memory)
+	}
+	if state.Cpus.ValueFloat64() != 1.5 {
+		t.Errorf("Cpus = %v, want 1.5 kept", state.Cpus)
+	}
+
+	// Unmanaged with limits set out-of-band: real drift, reported.
+	state = minimalContainerModel()
+	if diags := refreshMemory(&state, info); diags.HasError() {
+		t.Fatalf("refreshMemory: %v", diags)
+	}
+	refreshCpus(&state, info)
+	if state.Memory.ValueString() != "536870912" {
+		t.Errorf("Memory = %v, want 536870912", state.Memory)
+	}
+	if state.Cpus.ValueFloat64() != 1.5 {
+		t.Errorf("Cpus = %v, want 1.5", state.Cpus)
+	}
+
+	// Managed but limits removed out-of-band: nulled.
+	unlimited := &containerInspect{}
+	state = minimalContainerModel()
+	state.Memory = types.StringValue("512m")
+	state.Cpus = types.Float64Value(1.5)
+	if diags := refreshMemory(&state, unlimited); diags.HasError() {
+		t.Fatalf("refreshMemory: %v", diags)
+	}
+	refreshCpus(&state, unlimited)
+	if !state.Memory.IsNull() {
+		t.Errorf("Memory = %v, want null", state.Memory)
+	}
+	if !state.Cpus.IsNull() {
+		t.Errorf("Cpus = %v, want null", state.Cpus)
 	}
 }
 

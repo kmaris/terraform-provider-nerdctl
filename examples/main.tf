@@ -48,6 +48,13 @@ resource "nerdctl_container" "traefik" {
     TZ                = "UTC"
   }
 
+  # Exercises the managed-hostname and resource-limit drift paths; a
+  # re-plan after apply must be clean. Rootless hosts need cgroup v2
+  # delegation for the limits to apply.
+  hostname = "traefik-test"
+  memory   = "256m"
+  cpus     = 0.5
+
   ports = [
     { internal = 80, external = 8080 },
     { internal = 443, external = 8443 },

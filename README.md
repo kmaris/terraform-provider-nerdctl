@@ -16,10 +16,12 @@ reads.
 replacement (the docker provider does this for most attributes too). Known
 limitations:
 
-- `command` drift is not detected: the OCI spec merges entrypoint and
-  command, so it cannot be recovered from inspect output. All other container
-  attributes (image, restart, networks, ports, labels, volumes) are refreshed
-  on read.
+- `command` and `entrypoint` drift is not detected: the OCI spec merges
+  them, so neither can be recovered from inspect output. `workdir` is absent
+  from inspect output entirely. `user` and `hostname` drift is tracked only
+  when set in config (unset means image/runtime defaults, which inspect
+  cannot distinguish from explicit values). Everything else (image, restart,
+  networks, env, ports, labels, volumes, memory, cpus) is refreshed on read.
 - Network `driver` drift is not detected (`network inspect` does not report
   it) and imported networks assume `bridge`.
 - Remote hosts need non-interactive ssh (key auth in your agent) and, for
@@ -110,6 +112,13 @@ resource "nerdctl_container" "app" {
   restart = "unless-stopped" # default
   command = ["--flag=value"]
 
+  entrypoint = "/bin/app"  # override image entrypoint binary
+  user       = "1000:1000" # user[:group], image default when unset
+  workdir    = "/srv"
+  hostname   = "app-host"
+  memory     = "512m" # docker-style size
+  cpus       = 1.5    # cores
+
   networks = [nerdctl_network.app.name] # default bridge when unset
 
   env = {
@@ -146,9 +155,10 @@ terraform import nerdctl_network.app app-net
 terraform import nerdctl_container.app app
 ```
 
-Container import recovers every attribute except `command` (see limitations
-above) — if the container was started with arguments, set `command` in config
-to match before the next apply, or the plan will propose a replacement.
+Container import recovers every attribute except `command`, `entrypoint`,
+`workdir`, `user`, and `hostname` (see limitations above) — if the container
+was started with any of these, set them in config to match before the next
+apply, or the plan will propose a replacement.
 Anonymous volumes from image `VOLUME` directives are not imported; they are
 image-implied, not configuration.
 

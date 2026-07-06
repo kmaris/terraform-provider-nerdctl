@@ -20,7 +20,10 @@ const inspectFixture = `[
     "Name": "app",
     "RestartCount": 0,
     "HostConfig": {
-      "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}
+      "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
+      "Memory": 536870912,
+      "CPUQuota": 150000,
+      "CPUPeriod": 100000
     },
     "Mounts": [
       {"Type": "bind", "Source": "/srv/app", "Destination": "/etc/app", "Mode": "", "RW": false, "Propagation": "rprivate"},
@@ -28,6 +31,8 @@ const inspectFixture = `[
       {"Type": "volume", "Name": "9d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f90aabb", "Source": "/var/lib/nerdctl/1935db59/volumes/default/9d1e.../_data", "Destination": "/anon", "Mode": "", "RW": true, "Propagation": ""}
     ],
     "Config": {
+      "User": "1000:1000",
+      "Hostname": "app-host",
       "Env": [
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "NGINX_VERSION=1.29.0",
@@ -208,6 +213,58 @@ func TestInspectNetworks(t *testing.T) {
 	bare := &containerInspect{}
 	if got := bare.networks(); got != nil {
 		t.Errorf("networks() = %v, want nil", got)
+	}
+}
+
+func TestInspectUserHostnameAndLimits(t *testing.T) {
+	info := mustParseFixture(t)
+	if info.Config.User != "1000:1000" {
+		t.Errorf("User = %q, want %q", info.Config.User, "1000:1000")
+	}
+	if info.Config.Hostname != "app-host" {
+		t.Errorf("Hostname = %q, want %q", info.Config.Hostname, "app-host")
+	}
+	if info.HostConfig.Memory != 536870912 {
+		t.Errorf("Memory = %d, want %d", info.HostConfig.Memory, 536870912)
+	}
+	if got := info.cpus(); got != 1.5 {
+		t.Errorf("cpus() = %v, want 1.5", got)
+	}
+
+	// Unset quota means unlimited.
+	bare := &containerInspect{}
+	if got := bare.cpus(); got != 0 {
+		t.Errorf("cpus() = %v, want 0", got)
+	}
+}
+
+func TestParseMemoryBytes(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"512m", 512 << 20, false},
+		{"512M", 512 << 20, false},
+		{"512mb", 512 << 20, false},
+		{"1g", 1 << 30, false},
+		{"1.5g", 1610612736, false},
+		{"2k", 2048, false},
+		{"1024", 1024, false},
+		{"100b", 100, false},
+		{"", 0, true},
+		{"abc", 0, true},
+		{"-5m", 0, true},
+	}
+	for _, tt := range tests {
+		got, err := parseMemoryBytes(tt.in)
+		if tt.wantErr != (err != nil) {
+			t.Errorf("parseMemoryBytes(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("parseMemoryBytes(%q) = %d, want %d", tt.in, got, tt.want)
+		}
 	}
 }
 

@@ -21,6 +21,9 @@ type containerInspect struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
+		Memory    int64  `json:"Memory"`
+		CPUQuota  int64  `json:"CPUQuota"`
+		CPUPeriod uint64 `json:"CPUPeriod"`
 	} `json:"HostConfig"`
 	Mounts []struct {
 		Type        string `json:"Type"`
@@ -30,8 +33,10 @@ type containerInspect struct {
 		RW          bool   `json:"RW"`
 	} `json:"Mounts"`
 	Config struct {
-		Labels map[string]string `json:"Labels"`
-		Env    []string          `json:"Env"`
+		Labels   map[string]string `json:"Labels"`
+		Env      []string          `json:"Env"`
+		User     string            `json:"User"`
+		Hostname string            `json:"Hostname"`
 	} `json:"Config"`
 	NetworkSettings struct {
 		Ports map[string][]struct {
@@ -234,6 +239,43 @@ func (ci *containerInspect) volumeMounts() []volumeMountModel {
 		return out[i].ContainerPath.ValueString() < out[j].ContainerPath.ValueString()
 	})
 	return out
+}
+
+// cpus returns the CPU limit derived from the cgroup quota and period,
+// or 0 when unlimited.
+func (ci *containerInspect) cpus() float64 {
+	if ci.HostConfig.CPUQuota <= 0 || ci.HostConfig.CPUPeriod == 0 {
+		return 0
+	}
+	return float64(ci.HostConfig.CPUQuota) / float64(ci.HostConfig.CPUPeriod)
+}
+
+// parseMemoryBytes parses docker-style memory sizes — "512m", "1.5g",
+// "1073741824" — with binary (1024) multipliers.
+func parseMemoryBytes(s string) (int64, error) {
+	v := strings.ToLower(strings.TrimSpace(s))
+	v = strings.TrimSuffix(v, "b")
+	mult := int64(1)
+	if len(v) > 0 {
+		switch v[len(v)-1] {
+		case 'k':
+			mult = 1 << 10
+		case 'm':
+			mult = 1 << 20
+		case 'g':
+			mult = 1 << 30
+		case 't':
+			mult = 1 << 40
+		}
+		if mult > 1 {
+			v = v[:len(v)-1]
+		}
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("invalid memory value %q", s)
+	}
+	return int64(f * float64(mult)), nil
 }
 
 // normalizeImageRef strips the implied docker.io registry prefixes so
