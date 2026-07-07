@@ -74,6 +74,9 @@ type containerResourceModel struct {
 	Memory     types.String  `tfsdk:"memory"`
 	Cpus       types.Float64 `tfsdk:"cpus"`
 	Networks   types.List    `tfsdk:"networks"`
+	DNS        types.List    `tfsdk:"dns"`
+	DNSOpts    types.List    `tfsdk:"dns_opts"`
+	DNSSearch  types.List    `tfsdk:"dns_search"`
 	Env        types.Map     `tfsdk:"env"`
 	Ports      types.List    `tfsdk:"ports"`
 	Labels     types.Map     `tfsdk:"labels"`
@@ -166,6 +169,24 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				ElementType:   types.StringType,
 				Optional:      true,
 				Description:   "Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"dns": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "DNS nameservers written to the container's resolv.conf, passed with `--dns`. Inherits the host's resolver configuration when unset.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"dns_opts": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "resolv.conf options like `ndots:2`, passed with `--dns-option`.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"dns_search": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "DNS search domains for short-name lookups, passed with `--dns-search`.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 			},
 			"env": schema.MapAttribute{
@@ -333,6 +354,9 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	resp.Diagnostics.Append(refreshLabels(ctx, &state, info, imageLabels)...)
 	resp.Diagnostics.Append(refreshEnv(ctx, &state, info, imageEnv)...)
 	resp.Diagnostics.Append(refreshNetworks(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNS, info.HostConfig.DNS)...)
+	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNSOpts, info.HostConfig.DNSOptions)...)
+	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNSSearch, info.HostConfig.DNSSearch)...)
 	resp.Diagnostics.Append(refreshPorts(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshVolumes(ctx, &state, info)...)
 	if resp.Diagnostics.HasError() {
@@ -473,20 +497,15 @@ func refreshEnv(ctx context.Context, state *containerResourceModel, info *contai
 	return diags
 }
 
-// refreshNetworks overwrites state networks when the container's attached
-// networks differ. A null state matches the default bridge, so unconfigured
-// containers on the default network never show drift. Order is significant:
-// it determines interface order in the container.
-func refreshNetworks(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+// refreshStringList overwrites a list attribute when the actual values
+// differ. A null state and an empty actual compare equal, and order is
+// significant — network order sets interface order, nameserver and search
+// domain order set resolver precedence.
+func refreshStringList(ctx context.Context, target *types.List, actual []string) diag.Diagnostics {
 	var diags diag.Diagnostics
-	actual := info.networks()
-
-	if state.Networks.IsNull() && (len(actual) == 0 || (len(actual) == 1 && actual[0] == "bridge")) {
-		return diags
-	}
 	var current []string
-	if !state.Networks.IsNull() {
-		diags.Append(state.Networks.ElementsAs(ctx, &current, false)...)
+	if !target.IsNull() {
+		diags.Append(target.ElementsAs(ctx, &current, false)...)
 		if diags.HasError() {
 			return diags
 		}
@@ -495,13 +514,27 @@ func refreshNetworks(ctx context.Context, state *containerResourceModel, info *c
 		return diags
 	}
 	if len(actual) == 0 {
-		state.Networks = types.ListNull(types.StringType)
+		*target = types.ListNull(types.StringType)
 		return diags
 	}
 	l, d := types.ListValueFrom(ctx, types.StringType, actual)
 	diags.Append(d...)
-	state.Networks = l
+	if diags.HasError() {
+		return diags
+	}
+	*target = l
 	return diags
+}
+
+// refreshNetworks overwrites state networks when the container's attached
+// networks differ. A null state matches the default bridge, so unconfigured
+// containers on the default network never show drift.
+func refreshNetworks(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	actual := info.networks()
+	if state.Networks.IsNull() && len(actual) == 1 && actual[0] == "bridge" {
+		return nil
+	}
+	return refreshStringList(ctx, &state.Networks, actual)
 }
 
 func refreshPorts(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
@@ -621,6 +654,39 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		}
 		for _, n := range networks {
 			args = append(args, "--net", n)
+		}
+	}
+
+	if !plan.DNS.IsNull() {
+		var dns []string
+		diags.Append(plan.DNS.ElementsAs(ctx, &dns, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, d := range dns {
+			args = append(args, "--dns", d)
+		}
+	}
+
+	if !plan.DNSOpts.IsNull() {
+		var dnsOpts []string
+		diags.Append(plan.DNSOpts.ElementsAs(ctx, &dnsOpts, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, do := range dnsOpts {
+			args = append(args, "--dns-option", do)
+		}
+	}
+
+	if !plan.DNSSearch.IsNull() {
+		var dnsSearch []string
+		diags.Append(plan.DNSSearch.ElementsAs(ctx, &dnsSearch, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, ds := range dnsSearch {
+			args = append(args, "--dns-search", ds)
 		}
 	}
 

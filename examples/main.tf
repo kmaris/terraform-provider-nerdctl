@@ -65,6 +65,11 @@ resource "nerdctl_container" "traefik" {
   memory   = "256m"
   cpus     = 0.5
 
+  # Exercises the DNS drift paths; a re-plan after apply must be clean.
+  dns        = ["1.1.1.1", "8.8.8.8"]
+  dns_opts   = ["ndots:2"]
+  dns_search = ["example.internal"]
+
   ports = [
     { internal = 80, external = 8080 },
     { internal = 443, external = 8443 },

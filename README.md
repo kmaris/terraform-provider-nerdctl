@@ -129,6 +129,10 @@ resource "nerdctl_container" "app" {
 
   networks = [nerdctl_network.app.name] # default bridge when unset
 
+  dns        = ["1.1.1.1"]          # host resolver config when unset
+  dns_opts   = ["ndots:2"]
+  dns_search = ["example.internal"]
+
   env = {
     SOME_VAR = "value"
   }

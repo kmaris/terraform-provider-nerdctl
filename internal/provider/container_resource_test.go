@@ -14,15 +14,18 @@ import (
 // everything optional is null.
 func minimalContainerModel() containerResourceModel {
 	return containerResourceModel{
-		Name:     types.StringValue("app"),
-		Image:    types.StringValue("traefik:v3"),
-		Restart:  types.StringValue("unless-stopped"),
-		Command:  types.ListNull(types.StringType),
-		Networks: types.ListNull(types.StringType),
-		Env:      types.MapNull(types.StringType),
-		Ports:    types.ListNull(portObjectType),
-		Labels:   types.MapNull(types.StringType),
-		Volumes:  types.ListNull(volumeObjectType),
+		Name:      types.StringValue("app"),
+		Image:     types.StringValue("traefik:v3"),
+		Restart:   types.StringValue("unless-stopped"),
+		Command:   types.ListNull(types.StringType),
+		Networks:  types.ListNull(types.StringType),
+		DNS:       types.ListNull(types.StringType),
+		DNSOpts:   types.ListNull(types.StringType),
+		DNSSearch: types.ListNull(types.StringType),
+		Env:       types.MapNull(types.StringType),
+		Ports:     types.ListNull(portObjectType),
+		Labels:    types.MapNull(types.StringType),
+		Volumes:   types.ListNull(volumeObjectType),
 	}
 }
 
@@ -58,6 +61,9 @@ func TestBuildRunArgsFull(t *testing.T) {
 	plan.Memory = types.StringValue("512m")
 	plan.Cpus = types.Float64Value(1.5)
 	plan.Networks = mustList(t, types.StringType, []string{"app-net", "other-net"})
+	plan.DNS = mustList(t, types.StringType, []string{"8.8.8.8", "1.1.1.1"})
+	plan.DNSOpts = mustList(t, types.StringType, []string{"ndots:2"})
+	plan.DNSSearch = mustList(t, types.StringType, []string{"example.internal"})
 	plan.Ports = mustList(t, portObjectType, []portModel{
 		{Internal: types.Int64Value(80), External: types.Int64Value(8080), Protocol: types.StringValue("tcp")},
 		{Internal: types.Int64Value(69), External: types.Int64Value(69), Protocol: types.StringValue("udp")},
@@ -108,6 +114,10 @@ func TestBuildRunArgsFull(t *testing.T) {
 		"--cpus", "1.5",
 		"--net", "app-net",
 		"--net", "other-net",
+		"--dns", "8.8.8.8",
+		"--dns", "1.1.1.1",
+		"--dns-option", "ndots:2",
+		"--dns-search", "example.internal",
 		"-p", "8080:80/tcp",
 		"-p", "69:69/udp",
 		"--label", "a.label=1", // map keys must come out sorted, not in map order
@@ -256,6 +266,85 @@ func TestRefreshMemoryAndCpus(t *testing.T) {
 	}
 	if !state.Cpus.IsNull() {
 		t.Errorf("Cpus = %v, want null", state.Cpus)
+	}
+}
+
+func TestRefreshStringList(t *testing.T) {
+	ctx := context.Background()
+
+	// Null state and empty actual are equivalent: no dirtying.
+	l := types.ListNull(types.StringType)
+	if diags := refreshStringList(ctx, &l, nil); diags.HasError() {
+		t.Fatalf("refreshStringList: %v", diags)
+	}
+	if !l.IsNull() {
+		t.Errorf("list = %v, want null", l)
+	}
+
+	// Drift onto a null state is written (the import path).
+	if diags := refreshStringList(ctx, &l, []string{"1.1.1.1", "8.8.8.8"}); diags.HasError() {
+		t.Fatalf("refreshStringList: %v", diags)
+	}
+	var got []string
+	if diags := l.ElementsAs(ctx, &got, false); diags.HasError() {
+		t.Fatalf("reading list: %v", diags)
+	}
+	if want := []string{"1.1.1.1", "8.8.8.8"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("list = %v, want %v", got, want)
+	}
+
+	// Equal values leave state untouched.
+	if diags := refreshStringList(ctx, &l, []string{"1.1.1.1", "8.8.8.8"}); diags.HasError() {
+		t.Fatalf("refreshStringList: %v", diags)
+	}
+	if l.IsNull() {
+		t.Error("equal refresh nulled the list")
+	}
+
+	// Reordered values are drift: the comparison is ordered.
+	if diags := refreshStringList(ctx, &l, []string{"8.8.8.8", "1.1.1.1"}); diags.HasError() {
+		t.Fatalf("refreshStringList: %v", diags)
+	}
+	got = nil
+	if diags := l.ElementsAs(ctx, &got, false); diags.HasError() {
+		t.Fatalf("reading list: %v", diags)
+	}
+	if want := []string{"8.8.8.8", "1.1.1.1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("list = %v, want %v", got, want)
+	}
+
+	// Values removed out-of-band null the state.
+	if diags := refreshStringList(ctx, &l, nil); diags.HasError() {
+		t.Fatalf("refreshStringList: %v", diags)
+	}
+	if !l.IsNull() {
+		t.Errorf("list = %v, want null", l)
+	}
+}
+
+func TestRefreshNetworksBridgeDefault(t *testing.T) {
+	// A null state on the default bridge never shows drift...
+	info := &containerInspect{}
+	info.Config.Labels = map[string]string{"nerdctl/networks": `["bridge"]`}
+	state := minimalContainerModel()
+	if diags := refreshNetworks(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshNetworks: %v", diags)
+	}
+	if !state.Networks.IsNull() {
+		t.Errorf("Networks = %v, want null", state.Networks)
+	}
+
+	// ...but a managed network list still tracks a move back to bridge.
+	state.Networks = mustList(t, types.StringType, []string{"app-net"})
+	if diags := refreshNetworks(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshNetworks: %v", diags)
+	}
+	var got []string
+	if diags := state.Networks.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("reading networks: %v", diags)
+	}
+	if want := []string{"bridge"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Networks = %v, want %v", got, want)
 	}
 }
 

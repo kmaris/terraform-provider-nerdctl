@@ -28,6 +28,10 @@ resource "nerdctl_container" "app" {
 
   networks = [nerdctl_network.app.name] # default bridge when unset
 
+  dns        = ["1.1.1.1"]          # host resolver config when unset
+  dns_opts   = ["ndots:2"]
+  dns_search = ["example.internal"]
+
   env = {
     SOME_VAR = "value"
   }
@@ -60,6 +64,9 @@ resource "nerdctl_container" "app" {
 
 - `command` (List of String) Command and arguments passed after the image.
 - `cpus` (Number) CPU limit in cores, e.g. `1.5`. Rootless hosts need cgroup v2 delegation.
+- `dns` (List of String) DNS nameservers written to the container's resolv.conf, passed with `--dns`. Inherits the host's resolver configuration when unset.
+- `dns_opts` (List of String) resolv.conf options like `ndots:2`, passed with `--dns-option`.
+- `dns_search` (List of String) DNS search domains for short-name lookups, passed with `--dns-search`.
 - `entrypoint` (String) Overrides the image entrypoint binary. Like `command`, drift is not detected.
 - `env` (Map of String) Environment variables passed with `-e`. Variables the image already defines with the same value are treated as image-provided, not managed.
 - `hostname` (String) Container hostname. When unset, the runtime default applies and drift is not detected.

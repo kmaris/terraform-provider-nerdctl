@@ -21,9 +21,12 @@ type containerInspect struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
-		Memory    int64  `json:"Memory"`
-		CPUQuota  int64  `json:"CPUQuota"`
-		CPUPeriod uint64 `json:"CPUPeriod"`
+		Memory     int64    `json:"Memory"`
+		CPUQuota   int64    `json:"CPUQuota"`
+		CPUPeriod  uint64   `json:"CPUPeriod"`
+		DNS        []string `json:"Dns"`
+		DNSOptions []string `json:"DnsOptions"`
+		DNSSearch  []string `json:"DnsSearch"`
 	} `json:"HostConfig"`
 	Mounts []struct {
 		Type        string `json:"Type"`

@@ -23,7 +23,10 @@ const inspectFixture = `[
       "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
       "Memory": 536870912,
       "CPUQuota": 150000,
-      "CPUPeriod": 100000
+      "CPUPeriod": 100000,
+      "Dns": ["1.1.1.1"],
+      "DnsOptions": ["ndots:2"],
+      "DnsSearch": ["example.internal"]
     },
     "Mounts": [
       {"Type": "bind", "Source": "/var/lib/nerdctl/1935db59/containers/default/1f5a/resolv.conf", "Destination": "/etc/resolv.conf", "Mode": "bind,rprivate", "RW": true, "Propagation": "rprivate"},
@@ -269,6 +272,21 @@ func TestParseMemoryBytes(t *testing.T) {
 		if !tt.wantErr && got != tt.want {
 			t.Errorf("parseMemoryBytes(%q) = %d, want %d", tt.in, got, tt.want)
 		}
+	}
+}
+
+// TestInspectDNS pins the HostConfig JSON key spellings (Dns, not DNS)
+// observed in real nerdctl inspect output.
+func TestInspectDNS(t *testing.T) {
+	info := mustParseFixture(t)
+	if want := []string{"1.1.1.1"}; !reflect.DeepEqual(info.HostConfig.DNS, want) {
+		t.Errorf("DNS = %v, want %v", info.HostConfig.DNS, want)
+	}
+	if want := []string{"ndots:2"}; !reflect.DeepEqual(info.HostConfig.DNSOptions, want) {
+		t.Errorf("DNSOptions = %v, want %v", info.HostConfig.DNSOptions, want)
+	}
+	if want := []string{"example.internal"}; !reflect.DeepEqual(info.HostConfig.DNSSearch, want) {
+		t.Errorf("DNSSearch = %v, want %v", info.HostConfig.DNSSearch, want)
 	}
 }
 
