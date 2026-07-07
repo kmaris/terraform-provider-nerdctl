@@ -51,9 +51,11 @@ provider_installation {
 }
 ```
 
-Registry-style docs live in `docs/`, generated from schema descriptions and
+Registry-style docs live in `docs/`, generated from schema descriptions,
 the snippets under `examples/provider`, `examples/resources`, and
-`examples/data-sources`. Regenerate after schema changes:
+`examples/data-sources`, and the page templates in `templates/` (the
+provider index and the rootless-host guide carry hand-written prose there).
+Regenerate after schema or template changes:
 
 ```sh
 go tool tfplugindocs generate
