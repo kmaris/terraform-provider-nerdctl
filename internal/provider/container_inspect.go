@@ -203,6 +203,12 @@ func (ci *containerInspect) networks() []string {
 // volumes created by image VOLUME directives (tracked in the
 // nerdctl/anonymous-volumes label), which are not part of the configuration.
 // The result is sorted by container path for determinism.
+//
+// nerdctl bind-mounts its managed resolv.conf, hosts, and hostname files
+// into every container, and inspect output lists them when the container
+// has no nerdctl/mounts label (no user mounts). They are skipped like
+// docker does, at the cost of not tracking a deliberate user bind onto
+// those destinations.
 func (ci *containerInspect) volumeMounts() []volumeMountModel {
 	anonymous := map[string]bool{}
 	if raw := ci.Config.Labels["nerdctl/anonymous-volumes"]; raw != "" {
@@ -216,6 +222,10 @@ func (ci *containerInspect) volumeMounts() []volumeMountModel {
 
 	var out []volumeMountModel
 	for _, m := range ci.Mounts {
+		switch m.Destination {
+		case "/etc/resolv.conf", "/etc/hosts", "/etc/hostname":
+			continue
+		}
 		mount := volumeMountModel{
 			ContainerPath: types.StringValue(m.Destination),
 			HostPath:      types.StringNull(),

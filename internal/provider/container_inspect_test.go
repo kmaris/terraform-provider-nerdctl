@@ -26,6 +26,9 @@ const inspectFixture = `[
       "CPUPeriod": 100000
     },
     "Mounts": [
+      {"Type": "bind", "Source": "/var/lib/nerdctl/1935db59/containers/default/1f5a/resolv.conf", "Destination": "/etc/resolv.conf", "Mode": "bind,rprivate", "RW": true, "Propagation": "rprivate"},
+      {"Type": "bind", "Source": "/var/lib/nerdctl/1935db59/etchosts/default/1f5a/hosts", "Destination": "/etc/hosts", "Mode": "bind,rprivate", "RW": true, "Propagation": "rprivate"},
+      {"Type": "bind", "Source": "/var/lib/nerdctl/1935db59/containers/default/1f5a/hostname", "Destination": "/etc/hostname", "Mode": "bind,rprivate", "RW": true, "Propagation": "rprivate"},
       {"Type": "bind", "Source": "/srv/app", "Destination": "/etc/app", "Mode": "", "RW": false, "Propagation": "rprivate"},
       {"Type": "volume", "Name": "app_config", "Source": "/var/lib/nerdctl/1935db59/volumes/default/app_config/_data", "Destination": "/data", "Mode": "", "RW": true, "Propagation": ""},
       {"Type": "volume", "Name": "9d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f909d1e2f3a4b5c6d7e8f90aabb", "Source": "/var/lib/nerdctl/1935db59/volumes/default/9d1e.../_data", "Destination": "/anon", "Mode": "", "RW": true, "Propagation": ""}
@@ -183,7 +186,8 @@ func TestInspectPortModels(t *testing.T) {
 func TestInspectVolumeMounts(t *testing.T) {
 	info := mustParseFixture(t)
 	got := info.volumeMounts()
-	// Sorted by container path; the anonymous volume at /anon is excluded.
+	// Sorted by container path; the anonymous volume at /anon and nerdctl's
+	// managed resolv.conf/hosts/hostname bind mounts are excluded.
 	want := []volumeMountModel{
 		{
 			ContainerPath: types.StringValue("/data"),
