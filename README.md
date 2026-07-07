@@ -51,6 +51,14 @@ provider_installation {
 }
 ```
 
+Registry-style docs live in `docs/`, generated from schema descriptions and
+the snippets under `examples/provider`, `examples/resources`, and
+`examples/data-sources`. Regenerate after schema changes:
+
+```sh
+go tool tfplugindocs generate
+```
+
 ## Provider configuration
 
 ```hcl

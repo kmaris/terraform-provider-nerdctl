@@ -67,6 +67,7 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:      true,
+				Description:   "Network name, unique on the host.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"driver": schema.StringAttribute{
@@ -95,6 +96,7 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
 				Optional:      true,
+				Description:   "Labels applied with `--label`.",
 				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
 			},
 			"id": schema.StringAttribute{

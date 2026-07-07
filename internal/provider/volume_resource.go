@@ -42,6 +42,7 @@ func (r *volumeResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:      true,
+				Description:   "Volume name, unique on the host.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"mountpoint": schema.StringAttribute{

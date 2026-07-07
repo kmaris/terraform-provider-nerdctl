@@ -104,6 +104,7 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:      true,
+				Description:   "Container name, unique on the host.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"image": schema.StringAttribute{
@@ -176,26 +177,31 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
 				Optional:      true,
+				Description:   "Labels applied with `--label`.",
 				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
 			},
 			"ports": schema.ListNestedAttribute{
 				Optional:      true,
+				Description:   "Ports published with `-p`. Rootless hosts cannot bind external ports below 1024.",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"internal": schema.Int64Attribute{
-							Required:   true,
-							Validators: []validator.Int64{int64validator.Between(1, 65535)},
+							Required:    true,
+							Description: "Port inside the container.",
+							Validators:  []validator.Int64{int64validator.Between(1, 65535)},
 						},
 						"external": schema.Int64Attribute{
-							Required:   true,
-							Validators: []validator.Int64{int64validator.Between(1, 65535)},
+							Required:    true,
+							Description: "Port published on the host.",
+							Validators:  []validator.Int64{int64validator.Between(1, 65535)},
 						},
 						"protocol": schema.StringAttribute{
-							Optional:   true,
-							Computed:   true,
-							Default:    stringdefault.StaticString("tcp"),
-							Validators: []validator.String{stringvalidator.OneOf("tcp", "udp", "sctp")},
+							Optional:    true,
+							Computed:    true,
+							Description: "`tcp` (default), `udp`, or `sctp`.",
+							Default:     stringdefault.StaticString("tcp"),
+							Validators:  []validator.String{stringvalidator.OneOf("tcp", "udp", "sctp")},
 						},
 					},
 				},
@@ -207,27 +213,32 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"container_path": schema.StringAttribute{
-							Required: true,
+							Required:    true,
+							Description: "Mount destination inside the container.",
 						},
 						"host_path": schema.StringAttribute{
-							Optional: true,
+							Optional:    true,
+							Description: "Host directory for a bind mount.",
 							Validators: []validator.String{
 								stringvalidator.ExactlyOneOf(path.MatchRelative().AtParent().AtName("volume_name")),
 							},
 						},
 						"volume_name": schema.StringAttribute{
-							Optional: true,
+							Optional:    true,
+							Description: "Named volume to mount, e.g. a `nerdctl_volume` name.",
 						},
 						"read_only": schema.BoolAttribute{
-							Optional: true,
-							Computed: true,
-							Default:  booldefault.StaticBool(false),
+							Optional:    true,
+							Computed:    true,
+							Description: "Mount read-only. Defaults to `false`.",
+							Default:     booldefault.StaticBool(false),
 						},
 					},
 				},
 			},
 			"id": schema.StringAttribute{
 				Computed:      true,
+				Description:   "Container ID as reported by `nerdctl container inspect`.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},

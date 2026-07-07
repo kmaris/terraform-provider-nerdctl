@@ -35,7 +35,8 @@ func (d *volumeDataSource) Schema(_ context.Context, _ datasource.SchemaRequest,
 		Description: "An existing named volume. Fails when absent.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
-				Required: true,
+				Required:    true,
+				Description: "Volume name.",
 			},
 			"mountpoint": schema.StringAttribute{
 				Computed:    true,

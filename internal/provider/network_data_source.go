@@ -38,7 +38,8 @@ func (d *networkDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 		Description: "An existing CNI network, e.g. the default `bridge`. Fails when absent. The driver is not reported by `network inspect`.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
-				Required: true,
+				Required:    true,
+				Description: "Network name.",
 			},
 			"subnet": schema.StringAttribute{
 				Computed:    true,
