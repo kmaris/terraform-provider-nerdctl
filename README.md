@@ -61,6 +61,17 @@ Regenerate after schema or template changes:
 go tool tfplugindocs generate
 ```
 
+## CI and releases
+
+Pushes and pull requests run build, vet, gofmt, tests, and a docs-freshness
+gate (regenerate + diff) in GitHub Actions. Pushing a `v*` tag runs
+goreleaser: multi-platform zips, a GPG-signed `SHA256SUMS`, and the registry
+manifest attached to the GitHub release. Two repository secrets are
+required for releases: `GPG_PRIVATE_KEY` (ASCII-armored signing key) and
+`PASSPHRASE`. To publish on the Terraform Registry, add the key's public
+half to the registry account and publish the repository; tagged releases
+are then ingested automatically.
+
 ## Provider configuration
 
 ```hcl

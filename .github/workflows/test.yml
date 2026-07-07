@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "unformatted files:"
+            echo "$files"
+            exit 1
+          fi
+      - run: go test -count=1 ./...
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          # tfplugindocs execs terraform itself; the wrapper script breaks it.
+          terraform_wrapper: false
+      - run: go tool tfplugindocs generate
+      - name: Check docs are current
+        run: |
+          # -N stages intent-to-add so brand-new pages fail the diff too.
+          git add -N docs/
+          if ! git diff --exit-code docs/; then
+            echo "docs/ is stale; run 'go tool tfplugindocs generate' and commit."
+            exit 1
+          fi
+      - run: go tool tfplugindocs validate
