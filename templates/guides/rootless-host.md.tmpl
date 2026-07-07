@@ -10,14 +10,14 @@ description: |-
 
 Rootless containerd lets this provider manage containers over ssh without
 `sudo` — the containerd daemon, CNI networking, and all container state run
-as an unprivileged user. The pieces below are one-time host setup; each one
-was learned the hard way, so the *why* is included.
+as an unprivileged user. The steps below are one-time host setup; each was
+learned the hard way, so the *why* is included.
 
 ## 1. Install rootless containerd
 
 With containerd and nerdctl installed (the
 [nerdctl full release](https://github.com/containerd/nerdctl/releases)
-bundles everything including CNI plugins and rootlesskit):
+bundles everything, including CNI plugins and rootlesskit):
 
 ```sh
 containerd-rootless-setuptool.sh install
@@ -56,13 +56,13 @@ sudo apt install iptables   # or the distro equivalent
 ```
 
 The provider appends `/usr/local/sbin:/usr/sbin:/sbin` to the remote
-command's `PATH` (Debian-family non-interactive ssh omits them), but the
-binary itself has to exist.
+command's `PATH` (Debian-family non-interactive ssh omits those
+directories), but the binary itself has to exist.
 
 ## 4. cgroup v2 delegation — for `memory` and `cpus` limits
 
-Resource limits on rootless containers require the user's systemd slice to
-be delegated the relevant controllers:
+Resource limits on rootless containers require the relevant cgroup
+controllers to be delegated to the user's systemd slice:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/user@.service.d
@@ -73,14 +73,15 @@ EOF
 sudo systemctl daemon-reload
 ```
 
-Log out and back in (or reboot) so the user manager picks it up. Without
-delegation, `nerdctl run --memory ...` fails or silently ignores the limit.
+Log out and back in (or reboot) so the user manager picks up the change.
+Without delegation, `nerdctl run --memory ...` fails or silently ignores
+the limit.
 
 ## 5. Ports below 1024 — optional
 
 An unprivileged user cannot bind host ports below 1024, so
 `ports = [{ internal = 80, external = 80 }]` fails on a stock host. Either
-publish on high ports, or lower the threshold:
+publish on high ports or lower the threshold:
 
 ```sh
 echo 'net.ipv4.ip_unprivileged_port_start=0' | sudo tee /etc/sysctl.d/99-rootless-ports.conf
@@ -104,4 +105,4 @@ ssh <user>@<host> 'systemctl --user is-active containerd.service && nerdctl info
 ```
 
 If this prints `READY` from a fresh connection (no other sessions open),
-every piece above is in place.
+everything above is in place.

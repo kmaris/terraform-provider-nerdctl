@@ -6,7 +6,7 @@ terraform {
   }
 }
 
-# Rootless containerd on a remote host, connecting as the default ssh user.
+# Rootless containerd on a remote host; connects as the default ssh user.
 # Requires lingering on the host (`loginctl enable-linger <user>`) so
 # containerd survives ssh sessions and reboots.
 #
@@ -22,8 +22,8 @@ provider "nerdctl" {
   host = var.host
 }
 
-# The default bridge network always exists; reading it exercises the data
-# sources during plan.
+# The default bridge network always exists; reading it exercises the
+# network data source during plan.
 data "nerdctl_network" "bridge" {
   name = "bridge"
 }

@@ -123,12 +123,12 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			},
 			"entrypoint": schema.StringAttribute{
 				Optional:      true,
-				Description:   "Overrides the image entrypoint binary. Like `command`, drift is not detected.",
+				Description:   "Overrides the image entrypoint binary. As with `command`, drift is not detected.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"user": schema.StringAttribute{
 				Optional:      true,
-				Description:   "User to run as, `user[:group]` by name or id. When unset, the image default applies and drift is not detected.",
+				Description:   "User to run as, `user[:group]` by name or ID. When unset, the image default applies and drift is not detected.",
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"workdir": schema.StringAttribute{

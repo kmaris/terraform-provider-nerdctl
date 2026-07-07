@@ -67,7 +67,7 @@ resource "nerdctl_container" "app" {
 - `dns` (List of String) DNS nameservers written to the container's resolv.conf, passed with `--dns`. Inherits the host's resolver configuration when unset.
 - `dns_opts` (List of String) resolv.conf options like `ndots:2`, passed with `--dns-option`.
 - `dns_search` (List of String) DNS search domains for short-name lookups, passed with `--dns-search`.
-- `entrypoint` (String) Overrides the image entrypoint binary. Like `command`, drift is not detected.
+- `entrypoint` (String) Overrides the image entrypoint binary. As with `command`, drift is not detected.
 - `env` (Map of String) Environment variables passed with `-e`. Variables the image already defines with the same value are treated as image-provided, not managed.
 - `hostname` (String) Container hostname. When unset, the runtime default applies and drift is not detected.
 - `labels` (Map of String) Labels applied with `--label`.
@@ -75,7 +75,7 @@ resource "nerdctl_container" "app" {
 - `networks` (List of String) Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.
 - `ports` (Attributes List) Ports published with `-p`. Rootless hosts cannot bind external ports below 1024. (see [below for nested schema](#nestedatt--ports))
 - `restart` (String) Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`.
-- `user` (String) User to run as, `user[:group]` by name or id. When unset, the image default applies and drift is not detected.
+- `user` (String) User to run as, `user[:group]` by name or ID. When unset, the image default applies and drift is not detected.
 - `volumes` (Attributes List) Mounts. Set `host_path` for a bind mount or `volume_name` for a named volume, not both. (see [below for nested schema](#nestedatt--volumes))
 - `workdir` (String) Working directory inside the container. Drift is not detected (absent from inspect output).
 

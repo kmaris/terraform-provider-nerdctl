@@ -26,7 +26,7 @@ provider.
 
 - `nerdctl` and containerd on the target host, rootful or rootless.
 - `iptables` installed on the host — CNI networking needs it. On remote
-  hosts the provider extends the non-interactive ssh `PATH` with the sbin
+  hosts, the provider extends the non-interactive ssh `PATH` with the sbin
   directories where Debian-family systems keep it.
 - For remote hosts: non-interactive ssh (key auth in your agent) and a
   POSIX login shell on the target.
@@ -42,7 +42,7 @@ overrides all work).
 
 ## Rootless containerd
 
-Rootless hosts work without `sudo`, but need host preparation — lingering
+Rootless hosts work without `sudo` but need host preparation — lingering
 so containerd outlives ssh sessions, cgroup delegation for resource limits,
 and a sysctl for privileged ports. See the
 [Preparing a rootless containerd host](guides/rootless-host) guide.
