@@ -90,11 +90,19 @@ jobs:
             "https://github.com/containerd/nerdctl/releases/download/${TAG}/nerdctl-full-${VER}-linux-amd64.tar.gz"
           sudo tar Cxzf /usr/local /tmp/nerdctl-full.tgz
 
-      - name: Check rootful containerd
-        # Docker's containerd is already running on the runner; nerdctl
-        # talks to its default socket as root.
+      - name: Start bundled containerd
+        # The runner's preinstalled containerd (Docker's, 1.7-era) cannot
+        # spawn the 2.x shim that nerdctl-full puts in /usr/local/bin —
+        # the daemon and shim must come from the same release. Swap the
+        # runner's daemon for the bundled one (its unit ships in the
+        # tarball at /usr/local/lib/systemd/system, which precedes
+        # /usr/lib in the systemd search path).
         run: |
-          sudo systemctl status containerd --no-pager | head -3
+          sudo systemctl disable --now docker.service docker.socket containerd.service || true
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now containerd.service
+          systemctl show -p FragmentPath containerd.service   # expect /usr/local/lib/...
+          sudo /usr/local/bin/ctr version
           sudo /usr/local/bin/nerdctl info >/dev/null
           echo READY
 
