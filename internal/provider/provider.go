@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework/action"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
@@ -12,7 +13,10 @@ import (
 	"github.com/kmaris/terraform-provider-nerdctl/internal/nerdctl"
 )
 
-var _ provider.Provider = (*nerdctlProvider)(nil)
+var (
+	_ provider.Provider            = (*nerdctlProvider)(nil)
+	_ provider.ProviderWithActions = (*nerdctlProvider)(nil)
+)
 
 type nerdctlProvider struct {
 	version string
@@ -95,6 +99,7 @@ func (p *nerdctlProvider) Configure(ctx context.Context, req provider.ConfigureR
 
 	resp.ResourceData = client
 	resp.DataSourceData = client
+	resp.ActionData = client
 }
 
 func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource {
@@ -103,6 +108,17 @@ func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource 
 		NewVolumeResource,
 		NewNetworkResource,
 		NewContainerResource,
+	}
+}
+
+func (p *nerdctlProvider) Actions(context.Context) []func() action.Action {
+	return []func() action.Action{
+		NewExecAction,
+		NewContainerExportAction,
+		NewImageImportAction,
+		NewImageLoadAction,
+		NewImageSaveAction,
+		NewSystemPruneAction,
 	}
 }
 

@@ -13,7 +13,7 @@ resource "nerdctl_container" "app" {
 
   networks = [nerdctl_network.app.name] # default bridge when unset
 
-  dns        = ["1.1.1.1"]          # host resolver config when unset
+  dns        = ["1.1.1.1"] # host resolver config when unset
   dns_opts   = ["ndots:2"]
   dns_search = ["example.internal"]
 
@@ -22,7 +22,7 @@ resource "nerdctl_container" "app" {
   }
 
   ports = [
-    { internal = 80, external = 8080 },            # protocol defaults to tcp
+    { internal = 80, external = 8080 }, # protocol defaults to tcp
     { internal = 69, external = 69, protocol = "udp" },
   ]
 

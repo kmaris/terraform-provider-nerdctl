@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/action"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 
@@ -19,6 +20,23 @@ func clientFromProviderData(req resource.ConfigureRequest, resp *resource.Config
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected resource configure type",
+			fmt.Sprintf("expected *nerdctl.Client, got: %T", req.ProviderData),
+		)
+		return nil
+	}
+	return client
+}
+
+// clientFromActionProviderData mirrors clientFromProviderData for actions,
+// which use their own configure request type.
+func clientFromActionProviderData(req action.ConfigureRequest, resp *action.ConfigureResponse) *nerdctl.Client {
+	if req.ProviderData == nil {
+		return nil
+	}
+	client, ok := req.ProviderData.(*nerdctl.Client)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected action configure type",
 			fmt.Sprintf("expected *nerdctl.Client, got: %T", req.ProviderData),
 		)
 		return nil
