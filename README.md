@@ -61,6 +61,30 @@ Regenerate after schema or template changes:
 go tool tfplugindocs generate
 ```
 
+## Testing
+
+`go test ./...` runs the unit tests (argument building, inspect parsing,
+refresh semantics). The acceptance suite runs real plan/apply/destroy
+cycles against a real containerd host via terraform-plugin-testing and is
+gated behind `TF_ACC`:
+
+```sh
+NERDCTL_TEST_HOST=ssh://host TF_ACC=1 go test -v -run TestAcc ./internal/provider/ -timeout 30m
+```
+
+- Test objects use randomized `tfacc-*` names in a dedicated containerd
+  namespace (`NERDCTL_TEST_NAMESPACE`, default `tfacc`), so they never mix
+  with real workloads — but host port bindings (18080, 16969) and CNI
+  networks are host-global.
+- Leave `NERDCTL_TEST_HOST` empty to run against local nerdctl.
+- The Terraform CLI is taken from `TF_ACC_TERRAFORM_PATH`,
+  `TF_ACC_TERRAFORM_VERSION`, or `PATH`, and auto-downloaded otherwise.
+  The actions test skips itself below Terraform 1.14.
+- `nerdctl_system_prune` is not acceptance-tested: unused-network pruning
+  reaches across containerd namespaces. Its arguments are unit-tested.
+- Known leftovers: the actions test writes tarballs under `/tmp` on the
+  target host that the suite cannot remove.
+
 ## CI and releases
 
 Pushes and pull requests run build, vet, gofmt, tests, and a docs-freshness
@@ -168,6 +192,37 @@ resource "nerdctl_container" "app" {
 
 Each `volumes` entry takes exactly one of `host_path` (bind mount) or
 `volume_name` (named volume).
+
+## Actions
+
+Imperative operations (Terraform 1.14+), mirroring the docker provider's
+action set: `nerdctl_exec`, `nerdctl_container_export`,
+`nerdctl_image_import`, `nerdctl_image_load`, `nerdctl_image_save`, and
+`nerdctl_system_prune`. Trigger them from a resource lifecycle:
+
+```hcl
+resource "nerdctl_container" "app" {
+  # ...
+  lifecycle {
+    action_trigger {
+      events  = [after_create]
+      actions = [action.nerdctl_exec.mark_ready]
+    }
+  }
+}
+
+action "nerdctl_exec" "mark_ready" {
+  config {
+    container = nerdctl_container.app.name
+    command   = ["sh", "-c", "echo ready > /srv/status"]
+  }
+}
+```
+
+Two caveats: file paths in the archive actions (`image_save`, `image_load`,
+`image_import`, `container_export`) are on the **target host**, not the
+machine running Terraform; and `system_prune` is destructive to objects
+Terraform does not manage.
 
 ## Data sources
 

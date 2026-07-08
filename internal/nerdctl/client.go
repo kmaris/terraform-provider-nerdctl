@@ -125,7 +125,12 @@ func NotFound(err error) bool {
 	if strings.Contains(msg, "command not found") || strings.Contains(msg, "executable file not found") {
 		return false
 	}
-	return strings.Contains(msg, "no such") || strings.Contains(msg, "not found")
+	// Missing networks phrase it differently from the "no such X" /
+	// "X not found" wording of containers, images, and volumes.
+	return strings.Contains(msg, "no such") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "no network found") ||
+		strings.Contains(msg, "unable to find any network")
 }
 
 func shellQuote(s string) string {

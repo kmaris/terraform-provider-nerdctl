@@ -135,6 +135,8 @@ func TestNotFound(t *testing.T) {
 		{errors.New("exit status 1: time=... level=fatal msg=\"no such container: web\""), true},
 		{errors.New("exit status 1: Error: No such image: traefik:v3"), true},
 		{errors.New("volume web not found"), true},
+		// Networks phrase missing objects differently (verbatim from nerdctl 2.x).
+		{errors.New(`exit status 1: time="2026-07-08T06:13:46-06:00" level=error msg="no network found matching: tfacc-net" time="2026-07-08T06:13:46-06:00" level=fatal msg="unable to find any network matching the provided request"`), true},
 		// A missing binary must not read as a missing object, or Read would
 		// drop resources from state when the host is misconfigured.
 		{errors.New("exit status 127: bash: line 1: nerdctl: command not found"), false},
