@@ -1,0 +1,105 @@
+name: Acceptance
+
+# Runs the TF_ACC suite against real containerd on the runner itself, in
+# both rootless and rootful modes. Test objects live in the tfacc
+# containerd namespace with randomized names; everything is throwaway.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rootless:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install nerdctl-full
+        run: |
+          TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          VER=${TAG#v}
+          echo "installing nerdctl-full ${VER}"
+          curl -fsSL -o /tmp/nerdctl-full.tgz \
+            "https://github.com/containerd/nerdctl/releases/download/${TAG}/nerdctl-full-${VER}-linux-amd64.tar.gz"
+          sudo tar Cxzf /usr/local /tmp/nerdctl-full.tgz
+
+      # Mirrors the "Preparing a rootless containerd host" guide.
+      - name: Set up rootless containerd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y uidmap dbus-user-session
+
+          # Ubuntu 24.04 restricts unprivileged user namespaces by default,
+          # which blocks rootlesskit.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+          # cgroup v2 delegation so the memory/cpus tests work (guide step 4).
+          sudo mkdir -p /etc/systemd/system/user@.service.d
+          printf '[Service]\nDelegate=cpu cpuset io memory pids\n' \
+            | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+          sudo systemctl daemon-reload
+
+          # Lingering user manager (guide step 2). Runner steps are not
+          # login sessions, so point at the user bus explicitly.
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+
+      - name: Start rootless containerd
+        run: |
+          containerd-rootless-setuptool.sh install
+          systemctl --user is-active containerd.service
+          nerdctl info >/dev/null
+          echo READY
+
+      - name: Run acceptance tests
+        env:
+          TF_ACC: "1"
+          NERDCTL_TEST_HOST: ""
+        run: go test -v -count=1 -run TestAcc ./internal/provider/ -timeout 20m
+
+  rootful:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install nerdctl-full
+        run: |
+          TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          VER=${TAG#v}
+          echo "installing nerdctl-full ${VER}"
+          curl -fsSL -o /tmp/nerdctl-full.tgz \
+            "https://github.com/containerd/nerdctl/releases/download/${TAG}/nerdctl-full-${VER}-linux-amd64.tar.gz"
+          sudo tar Cxzf /usr/local /tmp/nerdctl-full.tgz
+
+      - name: Check rootful containerd
+        # Docker's containerd is already running on the runner; nerdctl
+        # talks to its default socket as root.
+        run: |
+          sudo systemctl status containerd --no-pager | head -3
+          sudo /usr/local/bin/nerdctl info >/dev/null
+          echo READY
+
+      - name: Run acceptance tests
+        # The suite itself runs as root so local nerdctl calls are rootful.
+        run: |
+          sudo -E env "PATH=$PATH" TF_ACC=1 NERDCTL_TEST_HOST= \
+            go test -v -count=1 -run TestAcc ./internal/provider/ -timeout 20m

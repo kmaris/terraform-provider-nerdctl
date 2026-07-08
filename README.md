@@ -88,7 +88,10 @@ NERDCTL_TEST_HOST=ssh://host TF_ACC=1 go test -v -run TestAcc ./internal/provide
 ## CI and releases
 
 Pushes and pull requests run build, vet, gofmt, tests, and a docs-freshness
-gate (regenerate + diff) in GitHub Actions. Pushing a `v*` tag runs
+gate (regenerate + diff) in GitHub Actions. A separate Acceptance workflow
+runs the full `TF_ACC` suite against real containerd on the runner itself,
+in both rootless mode (set up per the rootless-host guide) and rootful mode
+(against the runner's existing containerd, as root). Pushing a `v*` tag runs
 goreleaser: multi-platform zips, a GPG-signed `SHA256SUMS`, and the registry
 manifest attached to the GitHub release. Two repository secrets are
 required for releases: `GPG_PRIVATE_KEY` (ASCII-armored signing key) and
