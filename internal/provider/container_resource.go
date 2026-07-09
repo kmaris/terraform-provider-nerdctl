@@ -68,6 +68,7 @@ var (
 	}}
 )
 
+// NewContainerResource returns the nerdctl_container resource.
 func NewContainerResource() resource.Resource { return &containerResource{} }
 
 type containerResource struct {

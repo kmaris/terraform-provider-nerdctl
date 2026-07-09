@@ -15,6 +15,7 @@ var (
 	_ datasource.DataSourceWithConfigure = (*volumeDataSource)(nil)
 )
 
+// NewVolumeDataSource returns the nerdctl_volume data source.
 func NewVolumeDataSource() datasource.DataSource { return &volumeDataSource{} }
 
 type volumeDataSource struct {

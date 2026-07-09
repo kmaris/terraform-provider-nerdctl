@@ -17,6 +17,8 @@ var (
 	_ action.ActionWithConfigure = (*execAction)(nil)
 )
 
+// NewExecAction returns the nerdctl_exec action, which runs a command
+// inside a running container.
 func NewExecAction() action.Action { return &execAction{} }
 
 type execAction struct {

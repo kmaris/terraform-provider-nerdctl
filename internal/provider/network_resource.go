@@ -28,6 +28,7 @@ var (
 	_ resource.ResourceWithImportState = (*networkResource)(nil)
 )
 
+// NewNetworkResource returns the nerdctl_network resource.
 func NewNetworkResource() resource.Resource { return &networkResource{} }
 
 type networkResource struct {

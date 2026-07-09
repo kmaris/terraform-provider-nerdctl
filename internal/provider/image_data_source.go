@@ -15,6 +15,7 @@ var (
 	_ datasource.DataSourceWithConfigure = (*imageDataSource)(nil)
 )
 
+// NewImageDataSource returns the nerdctl_image data source.
 func NewImageDataSource() datasource.DataSource { return &imageDataSource{} }
 
 type imageDataSource struct {

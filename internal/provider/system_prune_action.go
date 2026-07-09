@@ -15,6 +15,8 @@ var (
 	_ action.ActionWithConfigure = (*systemPruneAction)(nil)
 )
 
+// NewSystemPruneAction returns the nerdctl_system_prune action, which
+// removes unused containers, images, networks, and optionally volumes.
 func NewSystemPruneAction() action.Action { return &systemPruneAction{} }
 
 type systemPruneAction struct {

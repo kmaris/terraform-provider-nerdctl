@@ -1,3 +1,4 @@
+// Command terraform-provider-nerdctl runs the provider's plugin server.
 package main
 
 import (

@@ -15,6 +15,8 @@ var (
 	_ action.ActionWithConfigure = (*imageLoadAction)(nil)
 )
 
+// NewImageLoadAction returns the nerdctl_image_load action, which loads
+// images from a tar archive.
 func NewImageLoadAction() action.Action { return &imageLoadAction{} }
 
 type imageLoadAction struct {

@@ -1,3 +1,5 @@
+// Package provider implements the nerdctl Terraform provider: its
+// resources, data sources, and actions.
 package provider
 
 import (
@@ -30,6 +32,8 @@ type nerdctlProviderModel struct {
 	Sudo        types.Bool   `tfsdk:"sudo"`
 }
 
+// New returns the provider factory the plugin server invokes, threading
+// the build version into each provider instance.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &nerdctlProvider{version: version}
