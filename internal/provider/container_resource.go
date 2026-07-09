@@ -6,27 +6,32 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	"github.com/kmaris/terraform-provider-nerdctl/internal/nerdctl"
 )
@@ -54,6 +59,13 @@ var (
 		"volume_name":    types.StringType,
 		"read_only":      types.BoolType,
 	}}
+	healthcheckObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+		"command":      types.StringType,
+		"interval":     types.StringType,
+		"timeout":      types.StringType,
+		"start_period": types.StringType,
+		"retries":      types.Int64Type,
+	}}
 )
 
 func NewContainerResource() resource.Resource { return &containerResource{} }
@@ -63,25 +75,42 @@ type containerResource struct {
 }
 
 type containerResourceModel struct {
-	Name       types.String  `tfsdk:"name"`
-	Image      types.String  `tfsdk:"image"`
-	Command    types.List    `tfsdk:"command"`
-	Entrypoint types.String  `tfsdk:"entrypoint"`
-	Restart    types.String  `tfsdk:"restart"`
-	User       types.String  `tfsdk:"user"`
-	Workdir    types.String  `tfsdk:"workdir"`
-	Hostname   types.String  `tfsdk:"hostname"`
-	Memory     types.String  `tfsdk:"memory"`
-	Cpus       types.Float64 `tfsdk:"cpus"`
-	Networks   types.List    `tfsdk:"networks"`
-	DNS        types.List    `tfsdk:"dns"`
-	DNSOpts    types.List    `tfsdk:"dns_opts"`
-	DNSSearch  types.List    `tfsdk:"dns_search"`
-	Env        types.Map     `tfsdk:"env"`
-	Ports      types.List    `tfsdk:"ports"`
-	Labels     types.Map     `tfsdk:"labels"`
-	Volumes    types.List    `tfsdk:"volumes"`
-	ID         types.String  `tfsdk:"id"`
+	Name          types.String  `tfsdk:"name"`
+	Image         types.String  `tfsdk:"image"`
+	Command       types.List    `tfsdk:"command"`
+	Entrypoint    types.String  `tfsdk:"entrypoint"`
+	Restart       types.String  `tfsdk:"restart"`
+	User          types.String  `tfsdk:"user"`
+	Workdir       types.String  `tfsdk:"workdir"`
+	Hostname      types.String  `tfsdk:"hostname"`
+	Memory        types.String  `tfsdk:"memory"`
+	Cpus          types.Float64 `tfsdk:"cpus"`
+	Privileged    types.Bool    `tfsdk:"privileged"`
+	CapAdd        types.List    `tfsdk:"cap_add"`
+	CapDrop       types.List    `tfsdk:"cap_drop"`
+	Sysctls       types.Map     `tfsdk:"sysctls"`
+	Tmpfs         types.Map     `tfsdk:"tmpfs"`
+	LogDriver     types.String  `tfsdk:"log_driver"`
+	LogOpts       types.Map     `tfsdk:"log_opts"`
+	Healthcheck   types.Object  `tfsdk:"healthcheck"`
+	NoHealthcheck types.Bool    `tfsdk:"no_healthcheck"`
+	Networks      types.List    `tfsdk:"networks"`
+	DNS           types.List    `tfsdk:"dns"`
+	DNSOpts       types.List    `tfsdk:"dns_opts"`
+	DNSSearch     types.List    `tfsdk:"dns_search"`
+	Env           types.Map     `tfsdk:"env"`
+	Ports         types.List    `tfsdk:"ports"`
+	Labels        types.Map     `tfsdk:"labels"`
+	Volumes       types.List    `tfsdk:"volumes"`
+	ID            types.String  `tfsdk:"id"`
+}
+
+type healthcheckModel struct {
+	Command     types.String `tfsdk:"command"`
+	Interval    types.String `tfsdk:"interval"`
+	Timeout     types.String `tfsdk:"timeout"`
+	StartPeriod types.String `tfsdk:"start_period"`
+	Retries     types.Int64  `tfsdk:"retries"`
 }
 
 type portModel struct {
@@ -163,6 +192,98 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(restartPolicyRe, "must be no, always, unless-stopped, or on-failure[:max-retries]"),
+				},
+			},
+			"privileged": schema.BoolAttribute{
+				Optional:      true,
+				Computed:      true,
+				Default:       booldefault.StaticBool(false),
+				Description:   "Run with extended privileges (`--privileged`). Capabilities are not tracked on privileged containers, which hold all of them.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+			},
+			"cap_add": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Linux capabilities to add, without the `CAP_` prefix, e.g. `NET_ADMIN`. `all` is rejected: inspect output reconstructs capabilities individually, so it cannot round-trip.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+				Validators: []validator.List{
+					listvalidator.ValueStringsAre(stringvalidator.NoneOfCaseInsensitive("all")),
+				},
+			},
+			"cap_drop": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Linux capabilities to drop, without the `CAP_` prefix, e.g. `MKNOD`. `all` is rejected for the same reason as in `cap_add`.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+				Validators: []validator.List{
+					listvalidator.ValueStringsAre(stringvalidator.NoneOfCaseInsensitive("all")),
+				},
+			},
+			"sysctls": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Namespaced kernel parameters set with `--sysctl`, e.g. `net.core.somaxconn`.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
+			},
+			"tmpfs": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "tmpfs mounts keyed by container path, with mount options as the value (empty for defaults), e.g. `{\"/run\" = \"size=64m\"}`. nerdctl always adds `noexec,nosuid,nodev` unless overridden; the comparison accounts for that.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
+			},
+			"log_driver": schema.StringAttribute{
+				Optional:      true,
+				Computed:      true,
+				Default:       stringdefault.StaticString("json-file"),
+				Description:   "Logging driver passed with `--log-driver`. `none` is not offered: inspect output cannot distinguish it from the default, so it would drift on every plan.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.OneOf("json-file", "journald", "fluentd", "syslog"),
+				},
+			},
+			"log_opts": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Driver-specific logging options passed with `--log-opt`, e.g. `max-size`.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
+			},
+			"healthcheck": schema.SingleNestedAttribute{
+				Optional:      true,
+				Description:   "Health check run inside the container. Requires nerdctl >= 2.1.5. When unset, the image healthcheck (if any) applies and drift is not detected; the same applies after `terraform import`.",
+				PlanModifiers: []planmodifier.Object{objectplanmodifier.RequiresReplace()},
+				Attributes: map[string]schema.Attribute{
+					"command": schema.StringAttribute{
+						Required:    true,
+						Description: "Shell command passed with `--health-cmd`, run as `CMD-SHELL`.",
+					},
+					"interval": schema.StringAttribute{
+						Optional:    true,
+						Description: "Time between checks as a Go duration, e.g. `30s` (the default).",
+						Validators:  []validator.String{durationString{}},
+					},
+					"timeout": schema.StringAttribute{
+						Optional:    true,
+						Description: "Time before a check counts as failed, e.g. `30s` (the default).",
+						Validators:  []validator.String{durationString{}},
+					},
+					"start_period": schema.StringAttribute{
+						Optional:    true,
+						Description: "Startup grace period during which failures don't count, e.g. `5s`. Defaults to `0s`.",
+						Validators:  []validator.String{durationString{allowZero: true}},
+					},
+					"retries": schema.Int64Attribute{
+						Optional:    true,
+						Description: "Consecutive failures needed to mark the container unhealthy. Defaults to 3.",
+						Validators:  []validator.Int64{int64validator.AtLeast(1)},
+					},
+				},
+			},
+			"no_healthcheck": schema.BoolAttribute{
+				Optional:      true,
+				Description:   "Disable any healthcheck defined by the image, passed with `--no-healthcheck`. Conflicts with `healthcheck`.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+				Validators: []validator.Bool{
+					boolvalidator.ConflictsWith(path.MatchRoot("healthcheck")),
 				},
 			},
 			"networks": schema.ListAttribute{
@@ -266,6 +387,32 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 	}
 }
 
+// durationString validates that a string parses as a Go duration. nerdctl
+// parses the healthcheck flags the same way, so validation here means bad
+// values fail at plan time instead of mid-apply.
+type durationString struct {
+	allowZero bool
+}
+
+func (durationString) Description(context.Context) string {
+	return "a Go duration like \"30s\" or \"1m30s\""
+}
+
+func (v durationString) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v durationString) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	d, err := time.ParseDuration(req.ConfigValue.ValueString())
+	if err != nil || d < 0 || (d == 0 && !v.allowZero) {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid duration",
+			fmt.Sprintf("%q must be a positive Go duration like \"30s\" or \"1m30s\"", req.ConfigValue.ValueString()))
+	}
+}
+
 func (r *containerResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = clientFromProviderData(req, resp)
 }
@@ -338,6 +485,13 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 
 	resp.Diagnostics.Append(refreshMemory(&state, info)...)
 	refreshCpus(&state, info)
+	refreshPrivileged(&state, info)
+	resp.Diagnostics.Append(refreshCaps(ctx, &state.CapAdd, info.HostConfig.CapAdd, info.HostConfig.Privileged)...)
+	resp.Diagnostics.Append(refreshCaps(ctx, &state.CapDrop, info.HostConfig.CapDrop, info.HostConfig.Privileged)...)
+	resp.Diagnostics.Append(refreshSysctls(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshTmpfs(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshLogConfig(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshHealthcheck(ctx, &state, info)...)
 
 	// Image labels and env merge into the container's; fetch them so they
 	// can be subtracted. Best-effort: without them (image removed
@@ -456,6 +610,233 @@ func refreshCpus(state *containerResourceModel, info *containerInspect) {
 		return
 	}
 	state.Cpus = types.Float64Value(actual)
+}
+
+// refreshPrivileged always writes a concrete value: the attribute is
+// computed with a default, so unlike the managed-only strings it may never
+// stay null (the import path arrives with it null).
+func refreshPrivileged(state *containerResourceModel, info *containerInspect) {
+	actual := info.HostConfig.Privileged
+	if state.Privileged.IsNull() || state.Privileged.ValueBool() != actual {
+		state.Privileged = types.BoolValue(actual)
+	}
+}
+
+// refreshCaps overwrites a capability list when the reconstructed set
+// differs. Comparison ignores order, case, and the CAP_ prefix; drifted
+// values are written in CLI form (no prefix), sorted. Privileged containers
+// hold every capability, so theirs are not tracked.
+func refreshCaps(ctx context.Context, target *types.List, actual []string, privileged bool) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if privileged {
+		return diags
+	}
+	var current []string
+	if !target.IsNull() {
+		diags.Append(target.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if capSetsEqual(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		*target = types.ListNull(types.StringType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, types.StringType, displayCaps(actual))
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	*target = l
+	return diags
+}
+
+// unprivilegedPortSysctl is injected by nerdctl into every container so it
+// can bind low ports without CAP_NET_BIND_SERVICE. Like the default PATH in
+// env, only prior state can tell it apart from user config.
+const unprivilegedPortSysctl = "net.ipv4.ip_unprivileged_port_start"
+
+// refreshSysctls overwrites state sysctls when the container's differ,
+// ignoring the nerdctl-injected default unless the state manages that key.
+func refreshSysctls(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := map[string]string{}
+	maps.Copy(actual, info.HostConfig.Sysctls)
+
+	current := map[string]string{}
+	if !state.Sysctls.IsNull() {
+		diags.Append(state.Sysctls.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if _, managed := current[unprivilegedPortSysctl]; !managed && actual[unprivilegedPortSysctl] == "0" {
+		delete(actual, unprivilegedPortSysctl)
+	}
+	if maps.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Sysctls = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.Sysctls = m
+	return diags
+}
+
+// refreshTmpfs overwrites state tmpfs mounts when the container's differ.
+// Option strings compare canonically — nerdctl merges user options into its
+// noexec,nosuid,nodev defaults, so state keeps the configured spelling on a
+// semantic match.
+func refreshTmpfs(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.HostConfig.Tmpfs
+
+	current := map[string]string{}
+	if !state.Tmpfs.IsNull() {
+		diags.Append(state.Tmpfs.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	equal := len(current) == len(actual)
+	if equal {
+		for dest, opts := range current {
+			actualOpts, ok := actual[dest]
+			if !ok || !tmpfsOptionsEqual(opts, actualOpts) {
+				equal = false
+				break
+			}
+		}
+	}
+	if equal {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Tmpfs = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.Tmpfs = m
+	return diags
+}
+
+// refreshLogConfig keeps the computed log_driver concrete (mirroring
+// restart) and treats null log_opts as equal to empty.
+func refreshLogConfig(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	driver := info.HostConfig.LogConfig.Driver
+	if driver == "" {
+		driver = "json-file"
+	}
+	if driver != state.LogDriver.ValueString() {
+		state.LogDriver = types.StringValue(driver)
+	}
+
+	actual := info.HostConfig.LogConfig.Opts
+	current := map[string]string{}
+	if !state.LogOpts.IsNull() {
+		diags.Append(state.LogOpts.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if maps.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.LogOpts = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.LogOpts = m
+	return diags
+}
+
+// refreshHealthcheck updates the healthcheck block only when the config
+// manages it: images define healthchecks too, and an unset block means the
+// image default applies (the user/hostname rule). Durations compare
+// semantically — "1m" equals the 60000000000ns from inspect — and unset
+// fields match the defaults nerdctl fills in at create time. no_healthcheck
+// follows the same managed-only rule.
+func refreshHealthcheck(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if state.NoHealthcheck.ValueBool() && !info.healthcheckDisabled() {
+		state.NoHealthcheck = types.BoolNull()
+	}
+	if state.Healthcheck.IsNull() {
+		return diags
+	}
+
+	var hc healthcheckModel
+	diags.Append(state.Healthcheck.As(ctx, &hc, basetypes.ObjectAsOptions{})...)
+	if diags.HasError() {
+		return diags
+	}
+
+	actual := info.Config.Healthcheck
+	if actual == nil || len(actual.Test) == 0 || info.healthcheckDisabled() {
+		state.Healthcheck = types.ObjectNull(healthcheckObjectType.AttrTypes)
+		return diags
+	}
+
+	changed := false
+	if cmd := actual.command(); cmd != hc.Command.ValueString() {
+		hc.Command = types.StringValue(cmd)
+		changed = true
+	}
+	if refreshHealthDuration(&hc.Interval, actual.Interval, 30*time.Second) {
+		changed = true
+	}
+	if refreshHealthDuration(&hc.Timeout, actual.Timeout, 30*time.Second) {
+		changed = true
+	}
+	if refreshHealthDuration(&hc.StartPeriod, actual.StartPeriod, 0) {
+		changed = true
+	}
+	if hc.Retries.IsNull() {
+		if actual.Retries != 3 {
+			hc.Retries = types.Int64Value(actual.Retries)
+			changed = true
+		}
+	} else if hc.Retries.ValueInt64() != actual.Retries {
+		hc.Retries = types.Int64Value(actual.Retries)
+		changed = true
+	}
+	if !changed {
+		return diags
+	}
+	obj, d := types.ObjectValueFrom(ctx, healthcheckObjectType.AttrTypes, hc)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	state.Healthcheck = obj
+	return diags
+}
+
+// refreshHealthDuration reports whether it rewrote the field. A null field
+// matches the given create-time default; a managed field matches any
+// spelling of the same duration.
+func refreshHealthDuration(field *types.String, actualNs int64, def time.Duration) bool {
+	actual := time.Duration(actualNs)
+	if field.IsNull() {
+		if actual == def {
+			return false
+		}
+	} else if current, err := time.ParseDuration(field.ValueString()); err == nil && current == actual {
+		return false
+	}
+	*field = types.StringValue(actual.String())
+	return true
 }
 
 // defaultSpecPathValue is containerd's PATH when neither the image nor the
@@ -606,15 +987,50 @@ func (r *containerResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	if _, err := r.client.Run(ctx, "rm", "-f", state.Name.ValueString()); err != nil && !nerdctl.NotFound(err) {
+	name := state.Name.ValueString()
+	if _, err := r.client.Run(ctx, "rm", "-f", name); err != nil && !nerdctl.NotFound(err) {
 		resp.Diagnostics.AddError("Failed to remove container", err.Error())
+		return
+	}
+
+	// In rootless mode `nerdctl rm -f` can return before containerd's restart
+	// monitor has finished releasing the container, which races the removal
+	// of any image, volume, or network the same destroy touches — the image
+	// still reports the just-removed container as a user. Wait until inspect
+	// no longer finds it. Best-effort: the force remove already succeeded, so
+	// a slow teardown is not itself an error to surface.
+	r.waitContainerGone(ctx, name)
+}
+
+// waitContainerGone polls until the named container is no longer inspectable,
+// bounded so a container that never disappears (e.g. resurrected by a broken
+// restart monitor) cannot hang the destroy indefinitely.
+func (r *containerResource) waitContainerGone(ctx context.Context, name string) {
+	const (
+		timeout  = 30 * time.Second
+		interval = time.Second
+	)
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := r.client.Run(ctx, "container", "inspect", name); nerdctl.NotFound(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 
 // ImportState imports by container name, e.g.
 // `terraform import nerdctl_container.app app`. Read recovers every
-// attribute except command, which is not present in inspect output — set it
-// in config to match the running container before applying.
+// attribute except command, which is not present in inspect output, and
+// healthcheck, which is indistinguishable from an image-defined one — set
+// those in config to match the running container before applying.
 func (r *containerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
@@ -644,6 +1060,78 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 	}
 	if !plan.Cpus.IsNull() {
 		args = append(args, "--cpus", strconv.FormatFloat(plan.Cpus.ValueFloat64(), 'f', -1, 64))
+	}
+	if plan.Privileged.ValueBool() {
+		args = append(args, "--privileged")
+	}
+
+	for _, cl := range []struct {
+		flag string
+		list types.List
+	}{{"--cap-add", plan.CapAdd}, {"--cap-drop", plan.CapDrop}} {
+		if cl.list.IsNull() {
+			continue
+		}
+		var caps []string
+		diags.Append(cl.list.ElementsAs(ctx, &caps, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, c := range caps {
+			args = append(args, cl.flag, c)
+		}
+	}
+
+	args, diags = appendMapFlags(ctx, args, diags, "--sysctl", plan.Sysctls)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	if !plan.Tmpfs.IsNull() {
+		tmpfs := map[string]string{}
+		diags.Append(plan.Tmpfs.ElementsAs(ctx, &tmpfs, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, dest := range slices.Sorted(maps.Keys(tmpfs)) {
+			spec := dest
+			if opts := tmpfs[dest]; opts != "" {
+				spec += ":" + opts
+			}
+			args = append(args, "--tmpfs", spec)
+		}
+	}
+
+	if d := plan.LogDriver.ValueString(); d != "" {
+		args = append(args, "--log-driver", d)
+	}
+	args, diags = appendMapFlags(ctx, args, diags, "--log-opt", plan.LogOpts)
+	if diags.HasError() {
+		return nil, diags
+	}
+
+	if !plan.Healthcheck.IsNull() {
+		var hc healthcheckModel
+		diags.Append(plan.Healthcheck.As(ctx, &hc, basetypes.ObjectAsOptions{})...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		args = append(args, "--health-cmd", hc.Command.ValueString())
+		if v := hc.Interval.ValueString(); v != "" {
+			args = append(args, "--health-interval", v)
+		}
+		if v := hc.Timeout.ValueString(); v != "" {
+			args = append(args, "--health-timeout", v)
+		}
+		if !hc.Retries.IsNull() {
+			args = append(args, "--health-retries", strconv.FormatInt(hc.Retries.ValueInt64(), 10))
+		}
+		if v := hc.StartPeriod.ValueString(); v != "" {
+			args = append(args, "--health-start-period", v)
+		}
+	}
+	if plan.NoHealthcheck.ValueBool() {
+		args = append(args, "--no-healthcheck")
 	}
 
 	if !plan.Networks.IsNull() {
@@ -702,36 +1190,14 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		}
 	}
 
-	if !plan.Labels.IsNull() {
-		labels := map[string]string{}
-		diags.Append(plan.Labels.ElementsAs(ctx, &labels, false)...)
-		if diags.HasError() {
-			return nil, diags
-		}
-		keys := make([]string, 0, len(labels))
-		for k := range labels {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "--label", k+"="+labels[k])
-		}
+	args, diags = appendMapFlags(ctx, args, diags, "--label", plan.Labels)
+	if diags.HasError() {
+		return nil, diags
 	}
 
-	if !plan.Env.IsNull() {
-		env := map[string]string{}
-		diags.Append(plan.Env.ElementsAs(ctx, &env, false)...)
-		if diags.HasError() {
-			return nil, diags
-		}
-		keys := make([]string, 0, len(env))
-		for k := range env {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "-e", k+"="+env[k])
-		}
+	args, diags = appendMapFlags(ctx, args, diags, "-e", plan.Env)
+	if diags.HasError() {
+		return nil, diags
 	}
 
 	if !plan.Volumes.IsNull() {
@@ -773,5 +1239,22 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		args = append(args, command...)
 	}
 
+	return args, diags
+}
+
+// appendMapFlags appends one flag per key=value entry, sorted by key so the
+// argument order is deterministic.
+func appendMapFlags(ctx context.Context, args []string, diags diag.Diagnostics, flag string, m types.Map) ([]string, diag.Diagnostics) {
+	if m.IsNull() {
+		return args, diags
+	}
+	kv := map[string]string{}
+	diags.Append(m.ElementsAs(ctx, &kv, false)...)
+	if diags.HasError() {
+		return args, diags
+	}
+	for _, k := range slices.Sorted(maps.Keys(kv)) {
+		args = append(args, flag, k+"="+kv[k])
+	}
 	return args, diags
 }

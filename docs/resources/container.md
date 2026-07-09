@@ -26,6 +26,31 @@ resource "nerdctl_container" "app" {
   memory     = "512m" # docker-style size
   cpus       = 1.5    # cores
 
+  cap_add  = ["net_admin"] # without the CAP_ prefix
+  cap_drop = ["mknod"]
+
+  sysctls = {
+    "net.core.somaxconn" = "1024"
+  }
+
+  tmpfs = {
+    "/run" = "size=64m" # nerdctl always adds noexec,nosuid,nodev
+  }
+
+  log_driver = "json-file" # default
+  log_opts = {
+    "max-size" = "10m"
+  }
+
+  # Requires nerdctl >= 2.1.5. Omit to inherit the image healthcheck.
+  healthcheck = {
+    command      = "curl -f http://localhost/ || exit 1"
+    interval     = "30s" # default
+    timeout      = "30s" # default
+    start_period = "5s"
+    retries      = 3 # default
+  }
+
   networks = [nerdctl_network.app.name] # default bridge when unset
 
   dns        = ["1.1.1.1"] # host resolver config when unset
@@ -62,6 +87,8 @@ resource "nerdctl_container" "app" {
 
 ### Optional
 
+- `cap_add` (List of String) Linux capabilities to add, without the `CAP_` prefix, e.g. `NET_ADMIN`. `all` is rejected: inspect output reconstructs capabilities individually, so it cannot round-trip.
+- `cap_drop` (List of String) Linux capabilities to drop, without the `CAP_` prefix, e.g. `MKNOD`. `all` is rejected for the same reason as in `cap_add`.
 - `command` (List of String) Command and arguments passed after the image.
 - `cpus` (Number) CPU limit in cores, e.g. `1.5`. Rootless hosts need cgroup v2 delegation.
 - `dns` (List of String) DNS nameservers written to the container's resolv.conf, passed with `--dns`. Inherits the host's resolver configuration when unset.
@@ -69,12 +96,19 @@ resource "nerdctl_container" "app" {
 - `dns_search` (List of String) DNS search domains for short-name lookups, passed with `--dns-search`.
 - `entrypoint` (String) Overrides the image entrypoint binary. As with `command`, drift is not detected.
 - `env` (Map of String) Environment variables passed with `-e`. Variables the image already defines with the same value are treated as image-provided, not managed.
+- `healthcheck` (Attributes) Health check run inside the container. Requires nerdctl >= 2.1.5. When unset, the image healthcheck (if any) applies and drift is not detected; the same applies after `terraform import`. (see [below for nested schema](#nestedatt--healthcheck))
 - `hostname` (String) Container hostname. When unset, the runtime default applies and drift is not detected.
 - `labels` (Map of String) Labels applied with `--label`.
+- `log_driver` (String) Logging driver passed with `--log-driver`. `none` is not offered: inspect output cannot distinguish it from the default, so it would drift on every plan.
+- `log_opts` (Map of String) Driver-specific logging options passed with `--log-opt`, e.g. `max-size`.
 - `memory` (String) Memory limit as a docker-style size, e.g. `512m` or `2g`. Rootless hosts need cgroup v2 delegation.
 - `networks` (List of String) Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.
+- `no_healthcheck` (Boolean) Disable any healthcheck defined by the image, passed with `--no-healthcheck`. Conflicts with `healthcheck`.
 - `ports` (Attributes List) Ports published with `-p`. Rootless hosts cannot bind external ports below 1024. (see [below for nested schema](#nestedatt--ports))
+- `privileged` (Boolean) Run with extended privileges (`--privileged`). Capabilities are not tracked on privileged containers, which hold all of them.
 - `restart` (String) Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`.
+- `sysctls` (Map of String) Namespaced kernel parameters set with `--sysctl`, e.g. `net.core.somaxconn`.
+- `tmpfs` (Map of String) tmpfs mounts keyed by container path, with mount options as the value (empty for defaults), e.g. `{"/run" = "size=64m"}`. nerdctl always adds `noexec,nosuid,nodev` unless overridden; the comparison accounts for that.
 - `user` (String) User to run as, `user[:group]` by name or ID. When unset, the image default applies and drift is not detected.
 - `volumes` (Attributes List) Mounts. Set `host_path` for a bind mount or `volume_name` for a named volume, not both. (see [below for nested schema](#nestedatt--volumes))
 - `workdir` (String) Working directory inside the container. Drift is not detected (absent from inspect output).
@@ -82,6 +116,21 @@ resource "nerdctl_container" "app" {
 ### Read-Only
 
 - `id` (String) Container ID as reported by `nerdctl container inspect`.
+
+<a id="nestedatt--healthcheck"></a>
+### Nested Schema for `healthcheck`
+
+Required:
+
+- `command` (String) Shell command passed with `--health-cmd`, run as `CMD-SHELL`.
+
+Optional:
+
+- `interval` (String) Time between checks as a Go duration, e.g. `30s` (the default).
+- `retries` (Number) Consecutive failures needed to mark the container unhealthy. Defaults to 3.
+- `start_period` (String) Startup grace period during which failures don't count, e.g. `5s`. Defaults to `0s`.
+- `timeout` (String) Time before a check counts as failed, e.g. `30s` (the default).
+
 
 <a id="nestedatt--ports"></a>
 ### Nested Schema for `ports`
