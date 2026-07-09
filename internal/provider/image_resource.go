@@ -21,6 +21,7 @@ var (
 	_ resource.ResourceWithImportState = (*imageResource)(nil)
 )
 
+// NewImageResource returns the nerdctl_image resource.
 func NewImageResource() resource.Resource { return &imageResource{} }
 
 type imageResource struct {

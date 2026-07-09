@@ -21,6 +21,7 @@ var (
 	_ resource.ResourceWithImportState = (*volumeResource)(nil)
 )
 
+// NewVolumeResource returns the nerdctl_volume resource.
 func NewVolumeResource() resource.Resource { return &volumeResource{} }
 
 type volumeResource struct {

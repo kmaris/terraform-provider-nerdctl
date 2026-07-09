@@ -1,0 +1,22 @@
+# golangci-lint v2 configuration.
+# Run locally with `golangci-lint run`; CI pins the same version.
+version: "2"
+
+linters:
+  # Start from the default set (errcheck, govet, ineffassign, staticcheck,
+  # unused) and add a few high-signal checks.
+  default: standard
+  enable:
+    - bodyclose # unclosed HTTP response bodies
+    - misspell # typos in comments and strings
+    - nilerr # returning nil after a non-nil error check
+    - revive # style, including doc comments on exported symbols
+    - unconvert # redundant type conversions
+    - unparam # unused function parameters and results
+  # gosec is intentionally omitted: the provider shells out to nerdctl via
+  # exec.Command with variable arguments throughout (internal/nerdctl), so
+  # its G204 subprocess check fires on every call with no real finding.
+
+formatters:
+  enable:
+    - gofmt

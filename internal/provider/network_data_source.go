@@ -15,6 +15,7 @@ var (
 	_ datasource.DataSourceWithConfigure = (*networkDataSource)(nil)
 )
 
+// NewNetworkDataSource returns the nerdctl_network data source.
 func NewNetworkDataSource() datasource.DataSource { return &networkDataSource{} }
 
 type networkDataSource struct {

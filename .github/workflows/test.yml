@@ -32,6 +32,17 @@ jobs:
           fi
       - run: go test -count=1 ./...
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
   docs:
     runs-on: ubuntu-latest
     steps:

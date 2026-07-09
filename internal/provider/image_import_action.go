@@ -15,6 +15,8 @@ var (
 	_ action.ActionWithConfigure = (*imageImportAction)(nil)
 )
 
+// NewImageImportAction returns the nerdctl_image_import action, which
+// creates an image from a filesystem tar archive.
 func NewImageImportAction() action.Action { return &imageImportAction{} }
 
 type imageImportAction struct {

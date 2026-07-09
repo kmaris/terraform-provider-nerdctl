@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Go modules, including the tool dependencies (tfplugindocs) in go.mod.
+  # Minor and patch bumps are grouped into a single weekly PR; majors, which
+  # usually want a closer look, still arrive on their own.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        update-types:
+          - minor
+          - patch
+
+  # Workflow action versions (actions/checkout, setup-go, setup-terraform,
+  # golangci-lint-action, ...).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

@@ -16,6 +16,8 @@ var (
 	_ action.ActionWithConfigure = (*containerExportAction)(nil)
 )
 
+// NewContainerExportAction returns the nerdctl_container_export action,
+// which writes a container's filesystem to a tar archive.
 func NewContainerExportAction() action.Action { return &containerExportAction{} }
 
 type containerExportAction struct {

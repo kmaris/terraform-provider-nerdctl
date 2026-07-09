@@ -19,6 +19,8 @@ var (
 	_ action.ActionWithConfigure = (*imageSaveAction)(nil)
 )
 
+// NewImageSaveAction returns the nerdctl_image_save action, which writes
+// images to a tar archive.
 func NewImageSaveAction() action.Action { return &imageSaveAction{} }
 
 type imageSaveAction struct {

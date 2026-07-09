@@ -13,6 +13,8 @@ import (
 	"strings"
 )
 
+// Config describes how to reach a containerd host and how to invoke
+// nerdctl on it.
 type Config struct {
 	// Host is empty for local execution, or "ssh://[user@]host[:port]".
 	Host string
@@ -28,6 +30,7 @@ type Config struct {
 	Sudo bool
 }
 
+// Client runs nerdctl commands against a host, locally or over ssh.
 type Client struct {
 	sshArgs     []string // nil means run locally
 	nerdctlPath string
@@ -35,6 +38,7 @@ type Client struct {
 	sudo        bool
 }
 
+// New builds a Client from cfg, validating the host URL.
 func New(cfg Config) (*Client, error) {
 	c := &Client{
 		nerdctlPath: cfg.NerdctlPath,
