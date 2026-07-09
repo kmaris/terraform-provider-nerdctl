@@ -11,6 +11,31 @@ resource "nerdctl_container" "app" {
   memory     = "512m" # docker-style size
   cpus       = 1.5    # cores
 
+  cap_add  = ["net_admin"] # without the CAP_ prefix
+  cap_drop = ["mknod"]
+
+  sysctls = {
+    "net.core.somaxconn" = "1024"
+  }
+
+  tmpfs = {
+    "/run" = "size=64m" # nerdctl always adds noexec,nosuid,nodev
+  }
+
+  log_driver = "json-file" # default
+  log_opts = {
+    "max-size" = "10m"
+  }
+
+  # Requires nerdctl >= 2.1.5. Omit to inherit the image healthcheck.
+  healthcheck = {
+    command      = "curl -f http://localhost/ || exit 1"
+    interval     = "30s" # default
+    timeout      = "30s" # default
+    start_period = "5s"
+    retries      = 3 # default
+  }
+
   networks = [nerdctl_network.app.name] # default bridge when unset
 
   dns        = ["1.1.1.1"] # host resolver config when unset

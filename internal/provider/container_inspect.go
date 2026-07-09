@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,12 +22,23 @@ type containerInspect struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
-		Memory     int64    `json:"Memory"`
-		CPUQuota   int64    `json:"CPUQuota"`
-		CPUPeriod  uint64   `json:"CPUPeriod"`
-		DNS        []string `json:"Dns"`
-		DNSOptions []string `json:"DnsOptions"`
-		DNSSearch  []string `json:"DnsSearch"`
+		Memory     int64             `json:"Memory"`
+		CPUQuota   int64             `json:"CPUQuota"`
+		CPUPeriod  uint64            `json:"CPUPeriod"`
+		DNS        []string          `json:"Dns"`
+		DNSOptions []string          `json:"DnsOptions"`
+		DNSSearch  []string          `json:"DnsSearch"`
+		Privileged bool              `json:"Privileged"`
+		CapAdd     []string          `json:"CapAdd"`
+		CapDrop    []string          `json:"CapDrop"`
+		Sysctls    map[string]string `json:"Sysctls"`
+		Tmpfs      map[string]string `json:"Tmpfs"`
+		// LogConfig keys are lowercase in dockercompat output, unlike the
+		// rest of HostConfig.
+		LogConfig struct {
+			Driver string            `json:"driver"`
+			Opts   map[string]string `json:"opts"`
+		} `json:"LogConfig"`
 	} `json:"HostConfig"`
 	Mounts []struct {
 		Type        string `json:"Type"`
@@ -36,10 +48,11 @@ type containerInspect struct {
 		RW          bool   `json:"RW"`
 	} `json:"Mounts"`
 	Config struct {
-		Labels   map[string]string `json:"Labels"`
-		Env      []string          `json:"Env"`
-		User     string            `json:"User"`
-		Hostname string            `json:"Hostname"`
+		Labels      map[string]string   `json:"Labels"`
+		Env         []string            `json:"Env"`
+		User        string              `json:"User"`
+		Hostname    string              `json:"Hostname"`
+		Healthcheck *healthcheckInspect `json:"Healthcheck"`
 	} `json:"Config"`
 	NetworkSettings struct {
 		Ports map[string][]struct {
@@ -252,6 +265,94 @@ func (ci *containerInspect) volumeMounts() []volumeMountModel {
 		return out[i].ContainerPath.ValueString() < out[j].ContainerPath.ValueString()
 	})
 	return out
+}
+
+// healthcheckInspect mirrors nerdctl's healthcheck.Healthcheck: durations
+// are time.Duration values serialized as nanosecond integers. nerdctl fills
+// unset fields with its defaults (30s interval and timeout, 0 start period,
+// 3 retries) at create time, so inspect output always carries concrete
+// values when a healthcheck exists.
+type healthcheckInspect struct {
+	Test        []string `json:"Test"`
+	Interval    int64    `json:"Interval"`
+	Timeout     int64    `json:"Timeout"`
+	StartPeriod int64    `json:"StartPeriod"`
+	Retries     int64    `json:"Retries"`
+}
+
+// command recovers the --health-cmd value. CLI-configured checks are stored
+// as ["CMD-SHELL", cmd]; exec-form tests from image config are joined for
+// comparison.
+func (h *healthcheckInspect) command() string {
+	if len(h.Test) >= 2 && (h.Test[0] == "CMD-SHELL" || h.Test[0] == "CMD") {
+		return strings.Join(h.Test[1:], " ")
+	}
+	return ""
+}
+
+// healthcheckDisabled reports whether health checking was explicitly turned
+// off (--no-healthcheck stores Test as ["NONE"]).
+func (ci *containerInspect) healthcheckDisabled() bool {
+	hc := ci.Config.Healthcheck
+	return hc != nil && len(hc.Test) > 0 && hc.Test[0] == "NONE"
+}
+
+// canonicalCap uppercases and strips the CAP_ prefix so config values like
+// "net_admin" compare equal to the OCI "CAP_NET_ADMIN" that inspect
+// reconstructs from the bounding set.
+func canonicalCap(c string) string {
+	return strings.TrimPrefix(strings.ToUpper(c), "CAP_")
+}
+
+// displayCaps converts OCI capability names to the CLI form used in config
+// (no CAP_ prefix), sorted for determinism.
+func displayCaps(caps []string) []string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		out = append(out, strings.TrimPrefix(c, "CAP_"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// capSetsEqual compares capability lists ignoring order, case, and the CAP_
+// prefix.
+func capSetsEqual(a, b []string) bool {
+	return keySetsEqual(a, b, canonicalCap)
+}
+
+// canonicalTmpfsOptions expands a tmpfs option string into its effective
+// option set. nerdctl seeds every tmpfs mount with noexec,nosuid,nodev and
+// lets user options override their counterparts, so a configured
+// "size=64m,exec" and the "nosuid,nodev,size=64m,exec" reported by inspect
+// canonicalize identically.
+func canonicalTmpfsOptions(opts string) map[string]string {
+	set := map[string]string{"noexec": "", "nosuid": "", "nodev": ""}
+	conflicts := map[string]string{
+		"exec": "noexec", "noexec": "exec",
+		"suid": "nosuid", "nosuid": "suid",
+		"dev": "nodev", "nodev": "dev",
+		"rw": "ro", "ro": "rw",
+	}
+	for _, o := range strings.Split(opts, ",") {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if k, v, ok := strings.Cut(o, "="); ok {
+			set[k] = v
+			continue
+		}
+		if other, ok := conflicts[o]; ok {
+			delete(set, other)
+		}
+		set[o] = ""
+	}
+	return set
+}
+
+func tmpfsOptionsEqual(a, b string) bool {
+	return maps.Equal(canonicalTmpfsOptions(a), canonicalTmpfsOptions(b))
 }
 
 // cpus returns the CPU limit derived from the cgroup quota and period,

@@ -26,7 +26,13 @@ const inspectFixture = `[
       "CPUPeriod": 100000,
       "Dns": ["1.1.1.1"],
       "DnsOptions": ["ndots:2"],
-      "DnsSearch": ["example.internal"]
+      "DnsSearch": ["example.internal"],
+      "Privileged": false,
+      "CapAdd": ["CAP_NET_ADMIN"],
+      "CapDrop": ["CAP_MKNOD"],
+      "Sysctls": {"net.core.somaxconn": "512", "net.ipv4.ip_unprivileged_port_start": "0"},
+      "Tmpfs": {"/run": "nosuid,nodev,size=64m,exec"},
+      "LogConfig": {"driver": "json-file", "opts": {"max-size": "5m"}}
     },
     "Mounts": [
       {"Type": "bind", "Source": "/var/lib/nerdctl/1935db59/containers/default/1f5a/resolv.conf", "Destination": "/etc/resolv.conf", "Mode": "bind,rprivate", "RW": true, "Propagation": "rprivate"},
@@ -39,6 +45,7 @@ const inspectFixture = `[
     "Config": {
       "User": "1000:1000",
       "Hostname": "app-host",
+      "Healthcheck": {"Test": ["CMD-SHELL", "true"], "Interval": 10000000000, "Timeout": 5000000000, "StartPeriod": 2000000000, "Retries": 2},
       "Env": [
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "NGINX_VERSION=1.29.0",
@@ -287,6 +294,102 @@ func TestInspectDNS(t *testing.T) {
 	}
 	if want := []string{"example.internal"}; !reflect.DeepEqual(info.HostConfig.DNSSearch, want) {
 		t.Errorf("DNSSearch = %v, want %v", info.HostConfig.DNSSearch, want)
+	}
+}
+
+// TestInspectHostConfigSecurity pins the JSON spellings of the newer
+// HostConfig fields, including LogConfig's lowercase keys.
+func TestInspectHostConfigSecurity(t *testing.T) {
+	info := mustParseFixture(t)
+	if info.HostConfig.Privileged {
+		t.Error("Privileged = true, want false")
+	}
+	if want := []string{"CAP_NET_ADMIN"}; !reflect.DeepEqual(info.HostConfig.CapAdd, want) {
+		t.Errorf("CapAdd = %v, want %v", info.HostConfig.CapAdd, want)
+	}
+	if want := []string{"CAP_MKNOD"}; !reflect.DeepEqual(info.HostConfig.CapDrop, want) {
+		t.Errorf("CapDrop = %v, want %v", info.HostConfig.CapDrop, want)
+	}
+	wantSysctls := map[string]string{"net.core.somaxconn": "512", "net.ipv4.ip_unprivileged_port_start": "0"}
+	if !reflect.DeepEqual(info.HostConfig.Sysctls, wantSysctls) {
+		t.Errorf("Sysctls = %v, want %v", info.HostConfig.Sysctls, wantSysctls)
+	}
+	if want := map[string]string{"/run": "nosuid,nodev,size=64m,exec"}; !reflect.DeepEqual(info.HostConfig.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v", info.HostConfig.Tmpfs, want)
+	}
+	if got := info.HostConfig.LogConfig.Driver; got != "json-file" {
+		t.Errorf("LogConfig.Driver = %q, want json-file", got)
+	}
+	if want := map[string]string{"max-size": "5m"}; !reflect.DeepEqual(info.HostConfig.LogConfig.Opts, want) {
+		t.Errorf("LogConfig.Opts = %v, want %v", info.HostConfig.LogConfig.Opts, want)
+	}
+}
+
+// TestInspectHealthcheck pins the nanosecond duration encoding.
+func TestInspectHealthcheck(t *testing.T) {
+	info := mustParseFixture(t)
+	hc := info.Config.Healthcheck
+	if hc == nil {
+		t.Fatal("Healthcheck = nil")
+	}
+	if got := hc.command(); got != "true" {
+		t.Errorf("command() = %q, want %q", got, "true")
+	}
+	if hc.Interval != 10_000_000_000 || hc.Timeout != 5_000_000_000 || hc.StartPeriod != 2_000_000_000 || hc.Retries != 2 {
+		t.Errorf("durations = %d/%d/%d retries %d, want 10s/5s/2s retries 2", hc.Interval, hc.Timeout, hc.StartPeriod, hc.Retries)
+	}
+	if info.healthcheckDisabled() {
+		t.Error("healthcheckDisabled() = true, want false")
+	}
+
+	disabled := &containerInspect{}
+	disabled.Config.Healthcheck = &healthcheckInspect{Test: []string{"NONE"}}
+	if !disabled.healthcheckDisabled() {
+		t.Error("healthcheckDisabled() = false, want true")
+	}
+
+	execForm := &healthcheckInspect{Test: []string{"CMD", "curl", "-f", "http://localhost/"}}
+	if got := execForm.command(); got != "curl -f http://localhost/" {
+		t.Errorf("command() = %q, want joined exec form", got)
+	}
+}
+
+func TestCapSetsEqual(t *testing.T) {
+	if !capSetsEqual([]string{"net_admin", "SYS_TIME"}, []string{"CAP_SYS_TIME", "CAP_NET_ADMIN"}) {
+		t.Error("capSetsEqual should ignore order, case, and CAP_ prefix")
+	}
+	if capSetsEqual([]string{"NET_ADMIN"}, []string{"CAP_SYS_TIME"}) {
+		t.Error("capSetsEqual missed differing capabilities")
+	}
+	if !capSetsEqual(nil, nil) {
+		t.Error("capSetsEqual(nil, nil) = false, want true")
+	}
+}
+
+func TestDisplayCaps(t *testing.T) {
+	got := displayCaps([]string{"CAP_SYS_TIME", "CAP_NET_ADMIN"})
+	if want := []string{"NET_ADMIN", "SYS_TIME"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("displayCaps = %v, want %v", got, want)
+	}
+}
+
+func TestTmpfsOptionsEqual(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		// Config spelling vs the merged form inspect reports.
+		{"size=64m,exec", "nosuid,nodev,size=64m,exec", true},
+		// Empty options equal the bare defaults.
+		{"", "noexec,nosuid,nodev", true},
+		// exec overrides the default noexec, so these differ.
+		{"size=64m", "nosuid,nodev,size=64m,exec", false},
+		{"size=64m", "noexec,nosuid,nodev,size=32m", false},
+	}
+	for _, tt := range tests {
+		if got := tmpfsOptionsEqual(tt.a, tt.b); got != tt.want {
+			t.Errorf("tmpfsOptionsEqual(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
 

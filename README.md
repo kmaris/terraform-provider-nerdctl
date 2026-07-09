@@ -18,10 +18,15 @@ limitations:
 
 - `command` and `entrypoint` drift is not detected: the OCI spec merges
   them, so neither can be recovered from inspect output. `workdir` is absent
-  from inspect output entirely. `user` and `hostname` drift is tracked only
-  when set in config (unset means image/runtime defaults, which inspect
-  cannot distinguish from explicit values). Everything else (image, restart,
-  networks, env, ports, labels, volumes, memory, cpus) is refreshed on read.
+  from inspect output entirely. `user`, `hostname`, `healthcheck`, and
+  `no_healthcheck` drift is tracked only when set in config (unset means
+  image/runtime defaults, which inspect cannot distinguish from explicit
+  values). Everything else (image, restart, networks, env, ports, labels,
+  volumes, memory, cpus, privileged, cap_add, cap_drop, sysctls, tmpfs,
+  log_driver, log_opts) is refreshed on read.
+- `healthcheck` needs nerdctl >= 2.1.5, and `log_driver` omits `none`
+  (inspect cannot tell it from the default). Capabilities are not tracked on
+  privileged containers, which hold all of them.
 - Network `driver` drift is not detected (`network inspect` does not report
   it) and imported networks assume `bridge`.
 - Remote hosts need non-interactive ssh (key auth in your agent) and, for
@@ -258,9 +263,9 @@ terraform import nerdctl_container.app app
 ```
 
 Container import recovers every attribute except `command`, `entrypoint`,
-`workdir`, `user`, and `hostname` (see limitations above) — if the container
-was started with any of these, set them in config to match before the next
-apply, or the plan will propose a replacement.
+`workdir`, `user`, `hostname`, and `healthcheck` (see limitations above) — if
+the container was started with any of these, set them in config to match
+before the next apply, or the plan will propose a replacement.
 Anonymous volumes from image `VOLUME` directives are not imported; they are
 image-implied, not configuration.
 
