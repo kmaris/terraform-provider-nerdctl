@@ -15,8 +15,13 @@ import (
 // (dockercompat) the provider reads. Field shapes follow
 // nerdctl/pkg/inspecttypes/dockercompat.
 type containerInspect struct {
-	ID         string `json:"Id"`
-	Image      string `json:"Image"`
+	ID    string `json:"Id"`
+	Image string `json:"Image"`
+	State struct {
+		Status  string `json:"Status"`
+		Running bool   `json:"Running"`
+		Pid     int    `json:"Pid"`
+	} `json:"State"`
 	HostConfig struct {
 		RestartPolicy struct {
 			Name              string `json:"Name"`
@@ -146,6 +151,22 @@ func (ci *containerInspect) userEnv(imageEnv []string) map[string]string {
 			continue
 		}
 		if iv, exists := img[k]; exists && iv == v {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// envMap parses the full container environment (Config.Env) into a map. The
+// container data source reports every variable, including image and runtime
+// defaults — unlike the resource's userEnv, which subtracts image entries to
+// recover only what the user set.
+func (ci *containerInspect) envMap() map[string]string {
+	out := map[string]string{}
+	for _, e := range ci.Config.Env {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
 			continue
 		}
 		out[k] = v

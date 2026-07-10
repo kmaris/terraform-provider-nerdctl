@@ -128,6 +128,7 @@ func (p *nerdctlProvider) Actions(context.Context) []func() action.Action {
 
 func (p *nerdctlProvider) DataSources(context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		NewContainerDataSource,
 		NewImageDataSource,
 		NewVolumeDataSource,
 		NewNetworkDataSource,

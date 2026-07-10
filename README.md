@@ -234,10 +234,16 @@ Terraform does not manage.
 
 ## Data sources
 
-`nerdctl_image`, `nerdctl_volume`, and `nerdctl_network` read existing
-objects by name, failing when absent:
+`nerdctl_container`, `nerdctl_image`, `nerdctl_volume`, and `nerdctl_network`
+read existing objects by name, failing when absent:
 
 ```hcl
+data "nerdctl_container" "app" {
+  # exports id, image, status, running, pid, restart, memory, cpus,
+  # privileged, networks, labels, env, and ports
+  name = "app"
+}
+
 data "nerdctl_network" "bridge" {
   name = "bridge" # exports id, subnet, gateway, labels
 }

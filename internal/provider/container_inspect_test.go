@@ -19,6 +19,7 @@ const inspectFixture = `[
     "Image": "docker.io/library/traefik:v3",
     "Name": "app",
     "RestartCount": 0,
+    "State": {"Status": "running", "Running": true, "Pid": 4242},
     "HostConfig": {
       "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
       "Memory": 536870912,
@@ -390,6 +391,25 @@ func TestTmpfsOptionsEqual(t *testing.T) {
 		if got := tmpfsOptionsEqual(tt.a, tt.b); got != tt.want {
 			t.Errorf("tmpfsOptionsEqual(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+func TestInspectStateAndEnvMap(t *testing.T) {
+	info := mustParseFixture(t)
+	if info.State.Status != "running" || !info.State.Running || info.State.Pid != 4242 {
+		t.Errorf("State = %+v, want status running / running true / pid 4242", info.State)
+	}
+
+	// envMap keeps every variable, including the runtime PATH and HOSTNAME
+	// that userEnv filters — the data source reports the raw environment.
+	env := info.envMap()
+	for _, k := range []string{"PATH", "NGINX_VERSION", "FOO", "OVERRIDE", "HOSTNAME"} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("envMap() missing %q; got %v", k, env)
+		}
+	}
+	if env["FOO"] != "bar" {
+		t.Errorf("envMap()[FOO] = %q, want bar", env["FOO"])
 	}
 }
 
