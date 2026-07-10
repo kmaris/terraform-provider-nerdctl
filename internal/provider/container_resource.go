@@ -989,17 +989,26 @@ func (r *containerResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	name := state.Name.ValueString()
+
+	// Stop before removing. A container with a restart policy (unless-stopped
+	// by default) is racy to force-remove directly: containerd's restart
+	// monitor can relaunch it in the window between rm's SIGKILL and the
+	// restart-label update, orphaning a task that keeps holding the image.
+	// That window is wide enough to lose when rm also has to tear a
+	// healthcheck's transient systemd timer down over dbus. `stop` marks the
+	// container explicitly-stopped, so the monitor leaves it alone and the
+	// removal is deterministic. Best-effort: a missing or already-stopped
+	// container is fine, and rm reports any real failure.
+	_, _ = r.client.Run(ctx, "stop", name)
+
 	if _, err := r.client.Run(ctx, "rm", "-f", name); err != nil && !nerdctl.NotFound(err) {
 		resp.Diagnostics.AddError("Failed to remove container", err.Error())
 		return
 	}
 
-	// In rootless mode `nerdctl rm -f` can return before containerd's restart
-	// monitor has finished releasing the container, which races the removal
-	// of any image, volume, or network the same destroy touches — the image
-	// still reports the just-removed container as a user. Wait until inspect
-	// no longer finds it. Best-effort: the force remove already succeeded, so
-	// a slow teardown is not itself an error to surface.
+	// Then wait until inspect no longer finds it, so a slow release cannot
+	// race the removal of an image, volume, or network destroyed in the same
+	// plan. Best-effort: the removal already succeeded.
 	r.waitContainerGone(ctx, name)
 }
 
