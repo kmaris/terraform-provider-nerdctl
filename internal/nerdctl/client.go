@@ -9,7 +9,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
+	"path"
 	"strings"
 )
 
@@ -115,6 +117,34 @@ func (c *Client) Run(ctx context.Context, args ...string) (string, error) {
 		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(argv, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// WriteFile writes content to filePath on the target host, creating any
+// missing parent directories. It writes to the local filesystem when nerdctl
+// runs locally, and streams the content over ssh otherwise, so callers can
+// stage files (such as compose files) on a remote host.
+func (c *Client) WriteFile(ctx context.Context, filePath, content string) error {
+	dir := path.Dir(filePath)
+	if c.sshArgs == nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", dir, err)
+		}
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", filePath, err)
+		}
+		return nil
+	}
+
+	remote := fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(dir), shellQuote(filePath))
+	args := append(append([]string{}, c.sshArgs...), remote)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = strings.NewReader(content)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("writing %s over ssh: %w: %s", filePath, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // NotFound reports whether an error from Run looks like a missing-object
