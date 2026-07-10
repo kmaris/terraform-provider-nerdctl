@@ -112,6 +112,7 @@ func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource 
 		NewVolumeResource,
 		NewNetworkResource,
 		NewContainerResource,
+		NewComposeResource,
 	}
 }
 

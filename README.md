@@ -201,6 +201,21 @@ resource "nerdctl_container" "app" {
 Each `volumes` entry takes exactly one of `host_path` (bind mount) or
 `volume_name` (named volume).
 
+### `nerdctl_compose`
+
+Manage a compose project as a unit. The compose files live on the host
+(`config_paths`); `nerdctl compose up`/`down` reconciles the services, so
+Terraform tracks the project rather than each service.
+
+```hcl
+resource "nerdctl_compose" "app" {
+  project_name = "app"
+  config_paths = ["/opt/app/compose.yaml"]
+  env_files    = ["/opt/app/.env"]
+  profiles     = ["prod"]
+}
+```
+
 ## Actions
 
 Imperative operations (Terraform 1.14+), mirroring the docker provider's
