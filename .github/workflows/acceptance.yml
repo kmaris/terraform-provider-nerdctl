@@ -66,6 +66,12 @@ jobs:
           nerdctl info >/dev/null
           echo READY
 
+      # buildkitd for the nerdctl_image build tests.
+      - name: Start rootless buildkit
+        run: |
+          containerd-rootless-setuptool.sh install-buildkit
+          systemctl --user is-active buildkit.service
+
       - name: Run acceptance tests
         env:
           TF_ACC: "1"
@@ -105,6 +111,13 @@ jobs:
           sudo /usr/local/bin/ctr version
           sudo /usr/local/bin/nerdctl info >/dev/null
           echo READY
+
+      # buildkitd for the nerdctl_image build tests. Its unit ships in the
+      # nerdctl-full tarball next to containerd's.
+      - name: Start bundled buildkit
+        run: |
+          sudo systemctl enable --now buildkit.service
+          systemctl is-active buildkit.service
 
       - name: Run acceptance tests
         # The suite itself runs as root so local nerdctl calls are rootful.

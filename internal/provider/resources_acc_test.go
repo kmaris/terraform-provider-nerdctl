@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccImage_basic(t *testing.T) {
@@ -26,6 +28,7 @@ resource "nerdctl_image" "test" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("nerdctl_image.test", "name", name),
 					resource.TestCheckResourceAttrSet("nerdctl_image.test", "id"),
+					resource.TestCheckResourceAttrSet("nerdctl_image.test", "repo_digest"),
 				),
 			},
 			{
@@ -33,6 +36,98 @@ resource "nerdctl_image" "test" {
 				ImportState:       true,
 				ImportStateId:     name,
 				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+// TestAccImage_build stages a build context on the host and builds an image
+// from it. Skips when the host has no running buildkitd, which `nerdctl
+// build` requires.
+func TestAccImage_build(t *testing.T) {
+	name := testAccRandomName("tfacc-img") + ":latest"
+	dir := "/tmp/" + testAccRandomName("tfacc-build")
+	dockerfile := `FROM alpine:3.20
+ARG MESSAGE=hello
+RUN echo "$MESSAGE" > /message
+`
+	client := testAccClient(t)
+	config := testAccProviderConfig() + fmt.Sprintf(`
+resource "nerdctl_image" "test" {
+  name = %q
+
+  build = {
+    context = %q
+
+    build_args = {
+      MESSAGE = "tfacc"
+    }
+  }
+}
+`, name, dir)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			ctx := context.Background()
+			if err := client.WriteFile(ctx, dir+"/Dockerfile", dockerfile); err != nil {
+				t.Fatalf("staging build context: %v", err)
+			}
+			// Probe for a running buildkitd with a throwaway build of the
+			// same context; the test build after it is a cache hit.
+			probe := testAccRandomName("tfacc-buildprobe")
+			if _, err := client.Run(ctx, "build", "-t", probe, dir); err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "buildkit") {
+					t.Skipf("no running buildkitd on the test host: %v", err)
+				}
+				t.Fatalf("probe build: %v", err)
+			}
+			_, _ = client.Run(ctx, "rmi", probe)
+		},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCheckGone(t, "image", name),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("nerdctl_image.test", "name", name),
+					resource.TestCheckResourceAttrSet("nerdctl_image.test", "id"),
+					// containerd assigns the manifest digest at build time,
+					// so unlike docker, built images have one before a push.
+					resource.TestCheckResourceAttrSet("nerdctl_image.test", "repo_digest"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccImage_keepLocally destroys an image with keep_locally set and
+// asserts it survives on the host.
+func TestAccImage_keepLocally(t *testing.T) {
+	name := "alpine:3.19"
+	client := testAccClient(t)
+	config := testAccProviderConfig() + fmt.Sprintf(`
+resource "nerdctl_image" "test" {
+  name         = %q
+  keep_locally = true
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: func(_ *terraform.State) error {
+			ctx := context.Background()
+			defer func() { _, _ = client.Run(ctx, "rmi", name) }()
+			if _, err := client.Run(ctx, "image", "inspect", name); err != nil {
+				return fmt.Errorf("image %q should survive destroy with keep_locally: %v", name, err)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttrSet("nerdctl_image.test", "id"),
 			},
 		},
 	})

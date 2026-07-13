@@ -3,18 +3,38 @@
 page_title: "nerdctl_image Resource - terraform-provider-nerdctl"
 subcategory: ""
 description: |-
-  An image pulled with nerdctl.
+  An image pulled or built with nerdctl. Pulls name from its registry, or builds it from build.context when build is set. Registry credentials come from the host's nerdctl login state.
 ---
 
 # nerdctl_image (Resource)
 
-An image pulled with nerdctl.
+An image pulled or built with nerdctl. Pulls `name` from its registry, or builds it from `build.context` when `build` is set. Registry credentials come from the host's `nerdctl login` state.
 
 ## Example Usage
 
 ```terraform
+# Pull an image from a registry.
 resource "nerdctl_image" "traefik" {
-  name = "traefik:v3"
+  name         = "traefik:v3"
+  keep_locally = true
+}
+
+# Build an image from a Dockerfile on the host. Requires a running buildkitd.
+resource "nerdctl_image" "app" {
+  name = "app:dev"
+
+  build = {
+    context = "/srv/app"
+
+    build_args = {
+      VERSION = "1.2.3"
+    }
+  }
+
+  # Sources are not tracked; force a rebuild when they change.
+  triggers = {
+    dockerfile_sha1 = filesha1("/srv/app/Dockerfile")
+  }
 }
 ```
 
@@ -23,11 +43,35 @@ resource "nerdctl_image" "traefik" {
 
 ### Required
 
-- `name` (String) Image reference to pull, e.g. `traefik:v3`.
+- `name` (String) Image reference, e.g. `traefik:v3`. The reference to pull, or the tag applied to the built image (`-t`) when `build` is set.
+
+### Optional
+
+- `build` (Attributes) Build the image with `nerdctl build` instead of pulling it. Requires a running buildkitd on the host. Sources are not tracked: use `triggers` to force rebuilds when they change. (see [below for nested schema](#nestedatt--build))
+- `force_remove` (Boolean) Remove with `rmi --force` on destroy, e.g. when other tags reference the same image. Defaults to `false`.
+- `keep_locally` (Boolean) Leave the image on the host on destroy, removing it from state only. Defaults to `false`.
+- `platform` (String) Target platform passed with `--platform`, e.g. `linux/arm64`. Uses the host platform when unset.
+- `triggers` (Map of String) Arbitrary values whose change forces a re-pull or rebuild (replacement). For builds, set e.g. a hash of the source files; for pulls, an upstream digest.
 
 ### Read-Only
 
 - `id` (String) Image ID (digest) as reported by `nerdctl image inspect`.
+- `repo_digest` (String) Immutable digest reference, e.g. `alpine@sha256:...`, usable as a container `image` on this host. Matches the registry digest for pulled images; for built images it resolves from a registry only after a push.
+
+<a id="nestedatt--build"></a>
+### Nested Schema for `build`
+
+Required:
+
+- `context` (String) Build context directory on the host running nerdctl.
+
+Optional:
+
+- `build_args` (Map of String) Build-time variables passed with `--build-arg`.
+- `dockerfile` (String) Dockerfile path on the host, passed with `-f`. Defaults to `Dockerfile` inside the context.
+- `labels` (Map of String) Labels applied to the image with `--label`.
+- `no_cache` (Boolean) Build without the buildkit cache, passed as `--no-cache`. Defaults to `false`.
+- `target` (String) Multi-stage build stage to stop at, passed with `--target`.
 
 ## Import
 
