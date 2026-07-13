@@ -41,6 +41,8 @@ func minimalContainerModel() containerResourceModel {
 		LogOpts:       types.MapNull(types.StringType),
 		Healthcheck:   types.ObjectNull(healthcheckObjectType.AttrTypes),
 		NoHealthcheck: types.BoolNull(),
+		Wait:          types.BoolNull(),
+		WaitTimeout:   types.Int64Null(),
 		Networks:      types.ListNull(types.StringType),
 		IP:            types.StringNull(),
 		IP6:           types.StringNull(),
@@ -667,6 +669,45 @@ func TestRefreshStopTimeoutAndPlatform(t *testing.T) {
 	if !state.StopTimeout.IsNull() {
 		t.Errorf("StopTimeout = %v, want null", state.StopTimeout)
 	}
+}
+
+func TestBuildUpdateArgs(t *testing.T) {
+	base := func() (containerResourceModel, containerResourceModel) {
+		plan := minimalContainerModel()
+		state := minimalContainerModel()
+		return plan, state
+	}
+
+	t.Run("nothing updatable changed", func(t *testing.T) {
+		plan, state := base()
+		plan.Wait = types.BoolValue(true) // wait alone needs no host call
+		if args := buildUpdateArgs(&plan, &state); args != nil {
+			t.Errorf("args = %v, want nil", args)
+		}
+	})
+
+	t.Run("all three changed", func(t *testing.T) {
+		plan, state := base()
+		state.Memory = types.StringValue("64m")
+		state.Cpus = types.Float64Value(0.25)
+		plan.Memory = types.StringValue("96m")
+		plan.Cpus = types.Float64Value(0.5)
+		plan.Restart = types.StringValue("always")
+		// cpus becomes quota/period: released nerdctl fails to persist --cpus.
+		want := []string{"update", "--memory", "96m", "--cpu-quota", "50000", "--cpu-period", "100000", "--restart", "always", "app"}
+		if args := buildUpdateArgs(&plan, &state); !reflect.DeepEqual(args, want) {
+			t.Errorf("args = %v, want %v", args, want)
+		}
+	})
+
+	t.Run("limit added where none existed", func(t *testing.T) {
+		plan, state := base()
+		plan.Memory = types.StringValue("64m")
+		want := []string{"update", "--memory", "64m", "app"}
+		if args := buildUpdateArgs(&plan, &state); !reflect.DeepEqual(args, want) {
+			t.Errorf("args = %v, want %v", args, want)
+		}
+	})
 }
 
 func TestBuildRunArgsNoHealthcheck(t *testing.T) {

@@ -21,6 +21,9 @@ type containerInspect struct {
 		Status  string `json:"Status"`
 		Running bool   `json:"Running"`
 		Pid     int    `json:"Pid"`
+		Health  *struct {
+			Status string `json:"Status"`
+		} `json:"Health"`
 	} `json:"State"`
 	HostConfig struct {
 		RestartPolicy struct {

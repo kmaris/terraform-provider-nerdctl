@@ -192,8 +192,8 @@ resource "nerdctl_container" "app" {
   user       = "1000:1000" # user[:group], image default when unset
   workdir    = "/srv"
   hostname   = "app-host"
-  memory     = "512m" # docker-style size
-  cpus       = 1.5    # cores
+  memory     = "512m" # docker-style size; updates in place
+  cpus       = 1.5    # cores; updates in place
 
   read_only    = true                  # root filesystem; use tmpfs/volumes for writable paths
   security_opt = ["no-new-privileges"] # also seccomp=<file>, apparmor=<profile>, ...
@@ -248,6 +248,12 @@ resource "nerdctl_container" "app" {
 Each `volumes` entry takes exactly one of `host_path` (bind mount) or
 `volume_name` (named volume). Containers on the same named network resolve
 each other by container name; nerdctl has no `--network-alias`.
+
+Changing `memory`, `cpus`, or `restart` updates the running container in
+place with `nerdctl update` (removing a limit still replaces — update
+cannot unset one); every other change replaces the container. Set
+`wait = true` (with an optional `wait_timeout`, default 60s) to block
+create until the healthcheck reports healthy.
 
 ### `nerdctl_compose`
 

@@ -54,6 +54,9 @@ resource "nerdctl_container" "app" {
     retries      = 3 # default
   }
 
+  wait         = true # block create until the healthcheck reports healthy
+  wait_timeout = 120  # seconds, 60 when unset
+
   networks    = [nerdctl_network.app.name] # default bridge when unset
   ip          = "10.5.0.5"                  # static IPv4; needs a known subnet
   mac_address = "02:ac:ce:55:00:01"         # bridge and macvlan networks

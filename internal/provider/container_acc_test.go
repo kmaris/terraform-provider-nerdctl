@@ -329,6 +329,118 @@ resource "nerdctl_container" "test" {
 	})
 }
 
+// TestAccContainer_wait proves create blocks until the healthcheck reports
+// healthy: the apply only succeeds if the container reached that state.
+// Requires nerdctl >= 2.1.5.
+func TestAccContainer_wait(t *testing.T) {
+	name := testAccRandomName("tfacc-ctr")
+	config := testAccProviderConfig() + fmt.Sprintf(`
+resource "nerdctl_image" "nginx" {
+  name = "nginx:alpine"
+}
+
+resource "nerdctl_container" "test" {
+  name  = %q
+  image = nerdctl_image.nginx.name
+
+  healthcheck = {
+    command  = "true"
+    interval = "2s"
+  }
+
+  wait         = true
+  wait_timeout = 120
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: testAccComposeGone(
+			testAccCheckGone(t, "container", name),
+			testAccCheckGone(t, "image", "nginx:alpine"),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("nerdctl_container.test", "id"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "wait", "true"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccContainer_updateInPlace proves memory, cpus, and restart change via
+// `nerdctl update` without replacement, and that removing a limit still
+// replaces (update cannot unset one).
+func TestAccContainer_updateInPlace(t *testing.T) {
+	name := testAccRandomName("tfacc-ctr")
+	step := func(attrs string) string {
+		return testAccProviderConfig() + fmt.Sprintf(`
+resource "nerdctl_image" "nginx" {
+  name = "nginx:alpine"
+}
+
+resource "nerdctl_container" "test" {
+  name  = %q
+  image = nerdctl_image.nginx.name
+%s
+}
+`, name, attrs)
+	}
+
+	var createdID string
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: testAccComposeGone(
+			testAccCheckGone(t, "container", name),
+			testAccCheckGone(t, "image", "nginx:alpine"),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: step(`
+  memory  = "64m"
+  cpus    = 0.25
+  restart = "always"`),
+				Check: resource.TestCheckResourceAttrWith("nerdctl_container.test", "id", func(v string) error {
+					createdID = v
+					return nil
+				}),
+			},
+			{
+				Config: step(`
+  memory  = "96m"
+  cpus    = 0.5
+  restart = "unless-stopped"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("nerdctl_container.test", "memory", "96m"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "cpus", "0.5"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "restart", "unless-stopped"),
+					resource.TestCheckResourceAttrWith("nerdctl_container.test", "id", func(v string) error {
+						if v != createdID {
+							return fmt.Errorf("container was replaced (id %s -> %s), expected in-place update", createdID, v)
+						}
+						return nil
+					}),
+				),
+			},
+			{
+				// Dropping the limits cannot be done in place.
+				Config: step(`  restart = "always"`),
+				Check: resource.TestCheckResourceAttrWith("nerdctl_container.test", "id", func(v string) error {
+					if v == createdID {
+						return fmt.Errorf("id unchanged, expected replacement when removing limits")
+					}
+					return nil
+				}),
+			},
+		},
+	})
+}
+
 // TestAccContainer_validators proves the plan-time validators fire before
 // anything reaches the host.
 func TestAccContainer_validators(t *testing.T) {
