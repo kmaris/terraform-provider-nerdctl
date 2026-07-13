@@ -28,3 +28,4 @@ data "nerdctl_image" "existing" {
 ### Read-Only
 
 - `id` (String) Image ID (digest) as reported by `nerdctl image inspect`.
+- `repo_digest` (String) Immutable digest reference, e.g. `alpine@sha256:...`, usable as a container `image` on this host. Matches the registry digest for pulled images; for built images it resolves from a registry only after a push.

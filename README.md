@@ -125,9 +125,32 @@ ssh connections run in batch mode with a 30s connect timeout; entries in
 
 ```hcl
 resource "nerdctl_image" "traefik" {
-  name = "traefik:v3"
+  name         = "traefik:v3"
+  platform     = "linux/amd64" # host platform when unset
+  keep_locally = true          # leave the image on the host on destroy
+}
+
+# Or build instead of pull (requires a running buildkitd on the host):
+resource "nerdctl_image" "app" {
+  name = "app:dev"
+
+  build = {
+    context    = "/srv/app"
+    dockerfile = "/srv/app/Dockerfile.prod" # <context>/Dockerfile when unset
+    build_args = { VERSION = "1.2.3" }
+  }
+
+  # Sources are not tracked; force a rebuild when they change.
+  triggers = {
+    dockerfile_sha1 = filesha1("/srv/app/Dockerfile.prod")
+  }
 }
 ```
+
+Exports `id` (the image digest) and `repo_digest`, an immutable digest
+reference usable as a container `image`. Built images get theirs at build
+time (a containerd nicety docker lacks), but it resolves from a registry
+only after a push.
 
 ### `nerdctl_volume`
 

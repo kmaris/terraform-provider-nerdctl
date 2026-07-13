@@ -23,8 +23,9 @@ type imageDataSource struct {
 }
 
 type imageDataSourceModel struct {
-	Name types.String `tfsdk:"name"`
-	ID   types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
+	RepoDigest types.String `tfsdk:"repo_digest"`
+	ID         types.String `tfsdk:"id"`
 }
 
 func (d *imageDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -38,6 +39,10 @@ func (d *imageDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, 
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Image reference, e.g. `traefik:v3`.",
+			},
+			"repo_digest": schema.StringAttribute{
+				Computed:    true,
+				Description: "Immutable digest reference, e.g. `alpine@sha256:...`, usable as a container `image` on this host. Matches the registry digest for pulled images; for built images it resolves from a registry only after a push.",
 			},
 			"id": schema.StringAttribute{
 				Computed:    true,
@@ -58,12 +63,17 @@ func (d *imageDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 		return
 	}
 
-	id, err := imageID(ctx, d.client, cfg.Name.ValueString())
+	info, err := inspectImage(ctx, d.client, cfg.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to inspect image", err.Error())
 		return
 	}
-	cfg.ID = types.StringValue(id)
+	cfg.ID = types.StringValue(info.ID)
+	if info.RepoDigest == "" {
+		cfg.RepoDigest = types.StringNull()
+	} else {
+		cfg.RepoDigest = types.StringValue(info.RepoDigest)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
 }
