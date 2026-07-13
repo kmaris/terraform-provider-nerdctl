@@ -36,7 +36,13 @@ resource "nerdctl_container" "app" {
     retries      = 3 # default
   }
 
-  networks = [nerdctl_network.app.name] # default bridge when unset
+  networks    = [nerdctl_network.app.name] # default bridge when unset
+  ip          = "10.5.0.5"                  # static IPv4; needs a known subnet
+  mac_address = "02:ac:ce:55:00:01"         # bridge and macvlan networks
+
+  extra_hosts = {
+    "db.internal" = "10.5.0.20" # /etc/hosts entries; "host-gateway" works too
+  }
 
   dns        = ["1.1.1.1"] # host resolver config when unset
   dns_opts   = ["ndots:2"]

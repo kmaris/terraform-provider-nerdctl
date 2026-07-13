@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strconv"
@@ -15,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/float64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -96,6 +99,10 @@ type containerResourceModel struct {
 	Healthcheck   types.Object  `tfsdk:"healthcheck"`
 	NoHealthcheck types.Bool    `tfsdk:"no_healthcheck"`
 	Networks      types.List    `tfsdk:"networks"`
+	IP            types.String  `tfsdk:"ip"`
+	IP6           types.String  `tfsdk:"ip6"`
+	MacAddress    types.String  `tfsdk:"mac_address"`
+	ExtraHosts    types.Map     `tfsdk:"extra_hosts"`
 	DNS           types.List    `tfsdk:"dns"`
 	DNSOpts       types.List    `tfsdk:"dns_opts"`
 	DNSSearch     types.List    `tfsdk:"dns_search"`
@@ -290,8 +297,33 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"networks": schema.ListAttribute{
 				ElementType:   types.StringType,
 				Optional:      true,
-				Description:   "Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.",
+				Description:   "Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset. Containers on the same named network resolve each other by container name (nerdctl has no `--network-alias`).",
 				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"ip": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Static IPv4 address, passed with `--ip`. The network must have a known subnet, e.g. a `nerdctl_network` with `subnet` set; unlike docker, nerdctl also allows this on the default bridge.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{ipString{}},
+			},
+			"ip6": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Static IPv6 address, passed with `--ip6`. Requires an IPv6-enabled network.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{ipString{v6: true}},
+			},
+			"mac_address": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Container MAC address, passed with `--mac-address`. Supported on `bridge` and `macvlan` networks; uniqueness is not checked.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{macString{}},
+			},
+			"extra_hosts": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Extra `/etc/hosts` entries keyed by hostname, each passed as `--add-host host:ip`. The special value `host-gateway` resolves to the host's gateway address.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
+				Validators:    []validator.Map{mapvalidator.ValueStringsAre(hostIPValue{})},
 			},
 			"dns": schema.ListAttribute{
 				ElementType:   types.StringType,
@@ -414,6 +446,81 @@ func (v durationString) ValidateString(_ context.Context, req validator.StringRe
 	}
 }
 
+// ipString validates an IP literal of the right family at plan time, the
+// same check nerdctl applies when parsing --ip/--ip6.
+type ipString struct {
+	v6 bool
+}
+
+func (v ipString) Description(context.Context) string {
+	if v.v6 {
+		return "an IPv6 address like \"fd00::5\""
+	}
+	return "an IPv4 address like \"10.4.0.5\""
+}
+
+func (v ipString) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v ipString) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	addr, err := netip.ParseAddr(req.ConfigValue.ValueString())
+	if err != nil || addr.Is4() == v.v6 {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid IP address",
+			fmt.Sprintf("%q must be %s", req.ConfigValue.ValueString(), v.Description(ctx)))
+	}
+}
+
+// macString validates a MAC address at plan time.
+type macString struct{}
+
+func (macString) Description(context.Context) string {
+	return "a MAC address like \"02:ac:ce:55:00:01\""
+}
+
+func (m macString) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m macString) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, err := net.ParseMAC(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MAC address",
+			fmt.Sprintf("%q must be %s", req.ConfigValue.ValueString(), m.Description(ctx)))
+	}
+}
+
+// hostIPValue validates extra_hosts values: an IP literal or the special
+// host-gateway alias nerdctl resolves to the host's gateway address.
+type hostIPValue struct{}
+
+func (hostIPValue) Description(context.Context) string {
+	return "an IP address or \"host-gateway\""
+}
+
+func (h hostIPValue) MarkdownDescription(ctx context.Context) string {
+	return h.Description(ctx)
+}
+
+func (h hostIPValue) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	v := req.ConfigValue.ValueString()
+	if v == "host-gateway" {
+		return
+	}
+	if _, err := netip.ParseAddr(v); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid extra_hosts value",
+			fmt.Sprintf("%q must be %s", v, h.Description(ctx)))
+	}
+}
+
 func (r *containerResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = clientFromProviderData(req, resp)
 }
@@ -509,6 +616,10 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	resp.Diagnostics.Append(refreshLabels(ctx, &state, info, imageLabels)...)
 	resp.Diagnostics.Append(refreshEnv(ctx, &state, info, imageEnv)...)
 	resp.Diagnostics.Append(refreshNetworks(ctx, &state, info)...)
+	refreshLabelString(&state.IP, info.staticIP())
+	refreshLabelString(&state.IP6, info.staticIP6())
+	refreshLabelString(&state.MacAddress, info.macAddress())
+	resp.Diagnostics.Append(refreshExtraHosts(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNS, info.HostConfig.DNS)...)
 	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNSOpts, info.HostConfig.DNSOptions)...)
 	resp.Diagnostics.Append(refreshStringList(ctx, &state.DNSSearch, info.HostConfig.DNSSearch)...)
@@ -561,6 +672,46 @@ func refreshManagedString(state *types.String, actual string) {
 		return
 	}
 	*state = types.StringValue(actual)
+}
+
+// refreshLabelString updates an attribute nerdctl persists verbatim in a
+// container label. Unlike refreshManagedString there is no image/runtime
+// default to confuse: an absent label means unset, so unmanaged values are
+// nulled and imports are filled in.
+func refreshLabelString(state *types.String, actual string) {
+	if actual == "" {
+		*state = types.StringNull()
+		return
+	}
+	if state.ValueString() != actual {
+		*state = types.StringValue(actual)
+	}
+}
+
+// refreshExtraHosts overwrites state extra_hosts when the entries recorded
+// in the nerdctl/extraHosts label differ.
+func refreshExtraHosts(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.extraHosts()
+
+	current := map[string]string{}
+	if !state.ExtraHosts.IsNull() {
+		diags.Append(state.ExtraHosts.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if maps.Equal(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.ExtraHosts = types.MapNull(types.StringType)
+		return diags
+	}
+	m, d := types.MapValueFrom(ctx, types.StringType, actual)
+	diags.Append(d...)
+	state.ExtraHosts = m
+	return diags
 }
 
 // refreshMemory compares semantically — "512m" in config equals 536870912
@@ -1152,6 +1303,27 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		}
 		for _, n := range networks {
 			args = append(args, "--net", n)
+		}
+	}
+
+	if v := plan.IP.ValueString(); v != "" {
+		args = append(args, "--ip", v)
+	}
+	if v := plan.IP6.ValueString(); v != "" {
+		args = append(args, "--ip6", v)
+	}
+	if v := plan.MacAddress.ValueString(); v != "" {
+		args = append(args, "--mac-address", v)
+	}
+
+	if !plan.ExtraHosts.IsNull() {
+		hosts := map[string]string{}
+		diags.Append(plan.ExtraHosts.ElementsAs(ctx, &hosts, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, h := range slices.Sorted(maps.Keys(hosts)) {
+			args = append(args, "--add-host", h+":"+hosts[h])
 		}
 	}
 

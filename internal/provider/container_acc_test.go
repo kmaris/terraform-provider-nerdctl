@@ -103,7 +103,13 @@ resource "nerdctl_container" "test" {
     "max-size" = "5m"
   }
 
-  networks = [nerdctl_network.net.name]
+  networks    = [nerdctl_network.net.name]
+  ip          = "10.118.0.10"
+  mac_address = "02:ac:ce:55:00:01"
+
+  extra_hosts = {
+    "db.tfacc.internal" = "10.118.0.20"
+  }
 
   dns        = ["1.1.1.1", "9.9.9.9"]
   dns_opts   = ["ndots:1"]
@@ -156,6 +162,11 @@ resource "nerdctl_container" "test" {
 					resource.TestCheckResourceAttr("nerdctl_container.test", "sysctls.net.ipv4.ip_forward", "1"),
 					resource.TestCheckResourceAttr("nerdctl_container.test", "tmpfs./scratch", "size=16m"),
 					resource.TestCheckResourceAttr("nerdctl_container.test", "log_opts.max-size", "5m"),
+					// Round-tripped from the nerdctl/ip, nerdctl/mac-address,
+					// and nerdctl/extraHosts labels.
+					resource.TestCheckResourceAttr("nerdctl_container.test", "ip", "10.118.0.10"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "mac_address", "02:ac:ce:55:00:01"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "extra_hosts.db.tfacc.internal", "10.118.0.20"),
 				),
 			},
 		},
@@ -318,6 +329,18 @@ resource "nerdctl_container" "test" {
 			{
 				Config:      fmt.Sprintf(base, `  restart = "sometimes"`),
 				ExpectError: regexp.MustCompile(`must be no, always`),
+			},
+			{
+				Config:      fmt.Sprintf(base, `  ip = "fd00::5"`),
+				ExpectError: regexp.MustCompile(`must be an IPv4 address`),
+			},
+			{
+				Config:      fmt.Sprintf(base, `  mac_address = "not-a-mac"`),
+				ExpectError: regexp.MustCompile(`must be a MAC address`),
+			},
+			{
+				Config:      fmt.Sprintf(base, `  extra_hosts = { "db" = "not-an-ip" }`),
+				ExpectError: regexp.MustCompile(`must be an IP address`),
 			},
 		},
 	})
