@@ -121,6 +121,9 @@ func (p *nerdctlProvider) Actions(context.Context) []func() action.Action {
 	return []func() action.Action{
 		NewExecAction,
 		NewContainerExportAction,
+		NewContainerStartAction,
+		NewContainerStopAction,
+		NewContainerRestartAction,
 		NewImageImportAction,
 		NewImageLoadAction,
 		NewImageSaveAction,

@@ -3,6 +3,8 @@ package provider
 import (
 	"reflect"
 	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 func TestExecArgs(t *testing.T) {
@@ -42,6 +44,24 @@ func TestSystemPruneArgs(t *testing.T) {
 		t.Errorf("args = %v, want %v", got, want)
 	}
 	if got, want := systemPruneArgs(true, true), []string{"system", "prune", "--force", "--all", "--volumes"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("args = %v, want %v", got, want)
+	}
+}
+
+func TestContainerStateArgs(t *testing.T) {
+	m := containerStateActionModel{
+		Container: types.StringValue("app"),
+		Timeout:   types.Int64Null(),
+		Signal:    types.StringNull(),
+	}
+	if got, want := containerStateArgs("start", &m), []string{"start", "app"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("args = %v, want %v", got, want)
+	}
+
+	m.Timeout = types.Int64Value(5)
+	m.Signal = types.StringValue("SIGINT")
+	want := []string{"stop", "-t", "5", "-s", "SIGINT", "app"}
+	if got := containerStateArgs("stop", &m); !reflect.DeepEqual(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
 	}
 }

@@ -14,10 +14,16 @@ A CNI network created with `nerdctl network create`. Networks are immutable: eve
 
 ```terraform
 resource "nerdctl_network" "app" {
-  name    = "app-net"
-  driver  = "bridge"      # default; also macvlan, ipvlan
-  subnet  = "10.5.0.0/24" # auto-assigned when unset
-  gateway = "10.5.0.1"    # requires subnet
+  name        = "app-net"
+  driver      = "bridge"        # default; also macvlan, ipvlan
+  subnet      = "10.5.0.0/24"   # auto-assigned when unset
+  gateway     = "10.5.0.1"      # requires subnet
+  ip_range    = "10.5.0.128/25" # allocate container IPs from a sub-range
+  ipv6_subnet = "fd00:5::/64"   # enables --ipv6
+
+  options = {
+    "mtu" = "1450" # driver options passed with -o
+  }
 
   labels = {
     "some.label" = "value"
@@ -36,7 +42,10 @@ resource "nerdctl_network" "app" {
 
 - `driver` (String) Network driver. Not reported by `network inspect`, so drift is not detected and imports assume `bridge`.
 - `gateway` (String) Gateway address within `subnet`. Requires `subnet`. Auto-assigned when unset.
+- `ip_range` (String) Sub-range of `subnet` to allocate container IPs from, in CIDR notation, passed with `--ip-range`. Requires `subnet`. Drift is not detected.
+- `ipv6_subnet` (String) IPv6 subnet in CIDR notation, e.g. `fd00:5::/64`. Enables IPv6 (`--ipv6`) and passes the subnet with an additional `--subnet`.
 - `labels` (Map of String) Labels applied with `--label`.
+- `options` (Map of String) Driver options passed with `-o`, e.g. `{"mtu" = "1450"}` for bridge, or `parent`/`mode` for macvlan and ipvlan. Not reported by `network inspect`, so drift is not detected.
 - `subnet` (String) Subnet in CIDR notation, e.g. `10.5.0.0/24`. Auto-assigned by nerdctl when unset.
 
 ### Read-Only

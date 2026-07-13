@@ -182,6 +182,10 @@ the Terraform state — nerdctl cannot delete from a registry.
 ```hcl
 resource "nerdctl_volume" "config" {
   name = "app_config"
+
+  labels = {
+    "some.label" = "value"
+  }
 }
 ```
 
@@ -191,10 +195,16 @@ Exports `mountpoint`, the backing directory on the host.
 
 ```hcl
 resource "nerdctl_network" "app" {
-  name    = "app-net"
-  driver  = "bridge"        # default; also macvlan, ipvlan
-  subnet  = "10.5.0.0/24"   # auto-assigned when unset
-  gateway = "10.5.0.1"      # requires subnet
+  name        = "app-net"
+  driver      = "bridge"        # default; also macvlan, ipvlan
+  subnet      = "10.5.0.0/24"   # auto-assigned when unset
+  gateway     = "10.5.0.1"      # requires subnet
+  ip_range    = "10.5.0.128/25" # allocate container IPs from a sub-range
+  ipv6_subnet = "fd00:5::/64"   # enables --ipv6
+
+  options = {
+    "mtu" = "1450" # driver options passed with -o; drift not detected
+  }
 
   labels = {
     "some.label" = "value"
@@ -299,8 +309,10 @@ resource "nerdctl_compose" "app" {
 
 Imperative operations (Terraform 1.14+), mirroring the docker provider's
 action set: `nerdctl_exec`, `nerdctl_container_export`,
-`nerdctl_image_import`, `nerdctl_image_load`, `nerdctl_image_save`, and
-`nerdctl_system_prune`. Trigger them from a resource lifecycle:
+`nerdctl_container_start`, `nerdctl_container_stop`,
+`nerdctl_container_restart`, `nerdctl_image_import`, `nerdctl_image_load`,
+`nerdctl_image_save`, and `nerdctl_system_prune`. Trigger them from a
+resource lifecycle:
 
 ```hcl
 resource "nerdctl_container" "app" {

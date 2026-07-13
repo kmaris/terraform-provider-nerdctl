@@ -24,6 +24,7 @@ type volumeDataSource struct {
 
 type volumeDataSourceModel struct {
 	Name       types.String `tfsdk:"name"`
+	Labels     types.Map    `tfsdk:"labels"`
 	Mountpoint types.String `tfsdk:"mountpoint"`
 }
 
@@ -38,6 +39,11 @@ func (d *volumeDataSource) Schema(_ context.Context, _ datasource.SchemaRequest,
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "Volume name.",
+			},
+			"labels": schema.MapAttribute{
+				ElementType: types.StringType,
+				Computed:    true,
+				Description: "User labels on the volume.",
 			},
 			"mountpoint": schema.StringAttribute{
 				Computed:    true,
@@ -58,12 +64,18 @@ func (d *volumeDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 
-	mountpoint, err := volumeMountpoint(ctx, d.client, cfg.Name.ValueString())
+	info, err := inspectVolume(ctx, d.client, cfg.Name.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to inspect volume", err.Error())
 		return
 	}
-	cfg.Mountpoint = types.StringValue(mountpoint)
+	cfg.Mountpoint = types.StringValue(info.Mountpoint)
+	labels, diags := types.MapValueFrom(ctx, types.StringType, stripNerdctlLabels(info.Labels))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	cfg.Labels = labels
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &cfg)...)
 }
