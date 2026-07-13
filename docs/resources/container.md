@@ -3,12 +3,12 @@
 page_title: "nerdctl_container Resource - terraform-provider-nerdctl"
 subcategory: ""
 description: |-
-  A container run with nerdctl run -d. Containers are treated as immutable: every change forces a replacement.
+  A container run with nerdctl run -d. Containers are treated as immutable — every change forces a replacement — except memory, cpus, and restart, which nerdctl update changes in place.
 ---
 
 # nerdctl_container (Resource)
 
-A container run with `nerdctl run -d`. Containers are treated as immutable: every change forces a replacement.
+A container run with `nerdctl run -d`. Containers are treated as immutable — every change forces a replacement — except `memory`, `cpus`, and `restart`, which `nerdctl update` changes in place.
 
 ## Example Usage
 
@@ -69,6 +69,9 @@ resource "nerdctl_container" "app" {
     retries      = 3 # default
   }
 
+  wait         = true # block create until the healthcheck reports healthy
+  wait_timeout = 120  # seconds, 60 when unset
+
   networks    = [nerdctl_network.app.name] # default bridge when unset
   ip          = "10.5.0.5"                  # static IPv4; needs a known subnet
   mac_address = "02:ac:ce:55:00:01"         # bridge and macvlan networks
@@ -114,7 +117,7 @@ resource "nerdctl_container" "app" {
 - `cap_add` (List of String) Linux capabilities to add, without the `CAP_` prefix, e.g. `NET_ADMIN`. `all` is rejected: inspect output reconstructs capabilities individually, so it cannot round-trip.
 - `cap_drop` (List of String) Linux capabilities to drop, without the `CAP_` prefix, e.g. `MKNOD`. `all` is rejected for the same reason as in `cap_add`.
 - `command` (List of String) Command and arguments passed after the image.
-- `cpus` (Number) CPU limit in cores, e.g. `1.5`. Rootless hosts need cgroup v2 delegation.
+- `cpus` (Number) CPU limit in cores, e.g. `1.5`. Changes in place via `nerdctl update`; removing the limit forces replacement (update cannot unset it). Rootless hosts need cgroup v2 delegation.
 - `devices` (Attributes List) Host devices to expose, passed with `--device`. Rootless hosts can only expose devices the user already has permission to open, and cannot remap paths: `container_path` must match `host_path` (runc binds the device node from the container path). (see [below for nested schema](#nestedatt--devices))
 - `dns` (List of String) DNS nameservers written to the container's resolv.conf, passed with `--dns`. Inherits the host's resolver configuration when unset.
 - `dns_opts` (List of String) resolv.conf options like `ndots:2`, passed with `--dns-option`.
@@ -133,7 +136,7 @@ resource "nerdctl_container" "app" {
 - `log_driver` (String) Logging driver passed with `--log-driver`. `none` is not offered: inspect output cannot distinguish it from the default, so it would drift on every plan.
 - `log_opts` (Map of String) Driver-specific logging options passed with `--log-opt`, e.g. `max-size`.
 - `mac_address` (String) Container MAC address, passed with `--mac-address`. Supported on `bridge` and `macvlan` networks; uniqueness is not checked.
-- `memory` (String) Memory limit as a docker-style size, e.g. `512m` or `2g`. Rootless hosts need cgroup v2 delegation.
+- `memory` (String) Memory limit as a docker-style size, e.g. `512m` or `2g`. Changes in place via `nerdctl update`; removing the limit forces replacement (update cannot unset it). Rootless hosts need cgroup v2 delegation.
 - `networks` (List of String) Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset. Containers on the same named network resolve each other by container name (nerdctl has no `--network-alias`).
 - `no_healthcheck` (Boolean) Disable any healthcheck defined by the image, passed with `--no-healthcheck`. Conflicts with `healthcheck`.
 - `pid` (String) PID namespace: `host` or `container:<name|id>`, passed with `--pid`. Drift is not detected.
@@ -141,7 +144,7 @@ resource "nerdctl_container" "app" {
 - `ports` (Attributes List) Ports published with `-p`. Rootless hosts cannot bind external ports below 1024. (see [below for nested schema](#nestedatt--ports))
 - `privileged` (Boolean) Run with extended privileges (`--privileged`). Capabilities are not tracked on privileged containers, which hold all of them.
 - `read_only` (Boolean) Mount the container's root filesystem read-only (`--read-only`). Writable paths need `tmpfs` or `volumes` entries.
-- `restart` (String) Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`.
+- `restart` (String) Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`. Changes in place via `nerdctl update`.
 - `security_opt` (List of String) Security options passed with `--security-opt`, e.g. `no-new-privileges`, `seccomp=<profile.json>`, `apparmor=<profile>`. Drift is not detected (absent from inspect output).
 - `shm_size` (String) Size of `/dev/shm` as a docker-style size, e.g. `128m`, passed with `--shm-size`. When unset, the 64m default applies and drift is not detected.
 - `stop_signal` (String) Signal used to stop the container, e.g. `SIGQUIT`. Defaults to `SIGTERM`. Drift is not detected.
@@ -151,6 +154,8 @@ resource "nerdctl_container" "app" {
 - `ulimits` (Attributes List) Resource limits passed with `--ulimit`. When unset, the runtime defaults apply and drift is not detected. (see [below for nested schema](#nestedatt--ulimits))
 - `user` (String) User to run as, `user[:group]` by name or ID. When unset, the image default applies and drift is not detected.
 - `volumes` (Attributes List) Mounts. Set `host_path` for a bind mount or `volume_name` for a named volume, not both. (see [below for nested schema](#nestedatt--volumes))
+- `wait` (Boolean) Block create until the healthcheck reports healthy. Requires a healthcheck, from the `healthcheck` attribute or the image. The provider runs the check itself every 2s while waiting (nerdctl's timer-based scheduler is not available in every environment), so checks may run more often than `interval` during the wait. A failed wait taints the container instead of orphaning it. Conflicts with `no_healthcheck`.
+- `wait_timeout` (Number) Seconds to wait for a healthy status before failing the create. Defaults to 60. Requires `wait`.
 - `workdir` (String) Working directory inside the container. Drift is not detected (absent from inspect output).
 
 ### Read-Only

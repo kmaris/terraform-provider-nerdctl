@@ -123,6 +123,8 @@ type containerResourceModel struct {
 	LogOpts       types.Map     `tfsdk:"log_opts"`
 	Healthcheck   types.Object  `tfsdk:"healthcheck"`
 	NoHealthcheck types.Bool    `tfsdk:"no_healthcheck"`
+	Wait          types.Bool    `tfsdk:"wait"`
+	WaitTimeout   types.Int64   `tfsdk:"wait_timeout"`
 	Networks      types.List    `tfsdk:"networks"`
 	IP            types.String  `tfsdk:"ip"`
 	IP6           types.String  `tfsdk:"ip6"`
@@ -177,7 +179,7 @@ func (r *containerResource) Metadata(_ context.Context, req resource.MetadataReq
 
 func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "A container run with `nerdctl run -d`. Containers are treated as immutable: every change forces a replacement.",
+		Description: "A container run with `nerdctl run -d`. Containers are treated as immutable — every change forces a replacement — except `memory`, `cpus`, and `restart`, which `nerdctl update` changes in place.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required:      true,
@@ -216,25 +218,40 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"memory": schema.StringAttribute{
-				Optional:      true,
-				Description:   "Memory limit as a docker-style size, e.g. `512m` or `2g`. Rootless hosts need cgroup v2 delegation.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Optional:    true,
+				Description: "Memory limit as a docker-style size, e.g. `512m` or `2g`. Changes in place via `nerdctl update`; removing the limit forces replacement (update cannot unset it). Rootless hosts need cgroup v2 delegation.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+							resp.RequiresReplace = req.PlanValue.IsNull() && !req.StateValue.IsNull()
+						},
+						"removing the limit forces replacement; nerdctl update cannot unset it",
+						"removing the limit forces replacement; `nerdctl update` cannot unset it",
+					),
+				},
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(memorySizeRe, "must be a size like 512m, 2g, or 1073741824"),
 				},
 			},
 			"cpus": schema.Float64Attribute{
-				Optional:      true,
-				Description:   "CPU limit in cores, e.g. `1.5`. Rootless hosts need cgroup v2 delegation.",
-				PlanModifiers: []planmodifier.Float64{float64planmodifier.RequiresReplace()},
-				Validators:    []validator.Float64{float64validator.AtLeast(0.01)},
+				Optional:    true,
+				Description: "CPU limit in cores, e.g. `1.5`. Changes in place via `nerdctl update`; removing the limit forces replacement (update cannot unset it). Rootless hosts need cgroup v2 delegation.",
+				PlanModifiers: []planmodifier.Float64{
+					float64planmodifier.RequiresReplaceIf(
+						func(_ context.Context, req planmodifier.Float64Request, resp *float64planmodifier.RequiresReplaceIfFuncResponse) {
+							resp.RequiresReplace = req.PlanValue.IsNull() && !req.StateValue.IsNull()
+						},
+						"removing the limit forces replacement; nerdctl update cannot unset it",
+						"removing the limit forces replacement; `nerdctl update` cannot unset it",
+					),
+				},
+				Validators: []validator.Float64{float64validator.AtLeast(0.01)},
 			},
 			"restart": schema.StringAttribute{
-				Optional:      true,
-				Computed:      true,
-				Default:       stringdefault.StaticString("unless-stopped"),
-				Description:   "Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`.",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("unless-stopped"),
+				Description: "Restart policy handled by containerd's restart manager: `no`, `always`, `unless-stopped`, or `on-failure[:max-retries]`. Changes in place via `nerdctl update`.",
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(restartPolicyRe, "must be no, always, unless-stopped, or on-failure[:max-retries]"),
 				},
@@ -440,6 +457,21 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
 				Validators: []validator.Bool{
 					boolvalidator.ConflictsWith(path.MatchRoot("healthcheck")),
+				},
+			},
+			"wait": schema.BoolAttribute{
+				Optional:    true,
+				Description: "Block create until the healthcheck reports healthy. Requires a healthcheck, from the `healthcheck` attribute or the image. The provider runs the check itself every 2s while waiting (nerdctl's timer-based scheduler is not available in every environment), so checks may run more often than `interval` during the wait. A failed wait taints the container instead of orphaning it. Conflicts with `no_healthcheck`.",
+				Validators: []validator.Bool{
+					boolvalidator.ConflictsWith(path.MatchRoot("no_healthcheck")),
+				},
+			},
+			"wait_timeout": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Seconds to wait for a healthy status before failing the create. Defaults to 60. Requires `wait`.",
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+					int64validator.AlsoRequires(path.MatchRoot("wait")),
 				},
 			},
 			"networks": schema.ListAttribute{
@@ -693,7 +725,68 @@ func (r *containerResource) Create(ctx context.Context, req resource.CreateReque
 	}
 	plan.ID = types.StringValue(id)
 
+	// Persist state before waiting, so a failed wait leaves the container
+	// tainted rather than orphaned.
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if plan.Wait.ValueBool() {
+		timeout := 60 * time.Second
+		if !plan.WaitTimeout.IsNull() {
+			timeout = time.Duration(plan.WaitTimeout.ValueInt64()) * time.Second
+		}
+		if err := r.waitForHealthy(ctx, plan.Name.ValueString(), timeout); err != nil {
+			resp.Diagnostics.AddError("Container did not become healthy", err.Error())
+		}
+	}
+}
+
+// waitForHealthy polls inspect until the healthcheck reports healthy. A
+// container without a healthcheck fails immediately rather than timing out,
+// and one that stops while waiting fails with its state.
+func (r *containerResource) waitForHealthy(ctx context.Context, name string, timeout time.Duration) error {
+	const interval = 2 * time.Second
+	deadline := time.Now().Add(timeout)
+	for {
+		// Drive the check directly rather than waiting for nerdctl's
+		// scheduler: automatic checks run from transient systemd timers,
+		// which don't exist in every environment (e.g. containers created
+		// over a non-login ssh session without a user bus). Best-effort — a
+		// failing check records its result and inspect reports the status.
+		_, _ = r.client.Run(ctx, "container", "healthcheck", name)
+
+		out, err := r.client.Run(ctx, "container", "inspect", name)
+		if err != nil {
+			return err
+		}
+		info, err := parseContainerInspect(out)
+		if err != nil {
+			return err
+		}
+		if hc := info.Config.Healthcheck; hc == nil || len(hc.Test) == 0 || info.healthcheckDisabled() {
+			return fmt.Errorf("container %s has no healthcheck to wait on", name)
+		}
+		if info.State.Health != nil && info.State.Health.Status == "healthy" {
+			return nil
+		}
+		if !info.State.Running {
+			return fmt.Errorf("container %s is %s, not running; it cannot become healthy", name, info.State.Status)
+		}
+		if time.Now().After(deadline) {
+			status := "unknown"
+			if info.State.Health != nil {
+				status = info.State.Health.Status
+			}
+			return fmt.Errorf("container %s not healthy after %s (last status %q)", name, timeout, status)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -1395,14 +1488,51 @@ func refreshVolumes(ctx context.Context, state *containerResourceModel, info *co
 	return diags
 }
 
-// Update is unreachable: every attribute requires replacement.
+// Update handles the attributes nerdctl can change on a live container —
+// memory, cpus, and restart, via `nerdctl update` — plus the create-time
+// knobs (wait, wait_timeout), which need no host call. Everything else
+// requires replacement.
 func (r *containerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan containerResourceModel
+	var plan, state containerResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	if args := buildUpdateArgs(&plan, &state); args != nil {
+		if _, err := r.client.Run(ctx, args...); err != nil {
+			resp.Diagnostics.AddError("Failed to update container", err.Error())
+			return
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// buildUpdateArgs returns the `nerdctl update` argument list for in-place
+// changes, or nil when nothing updatable changed (e.g. only wait changed).
+// Null-to-set transitions add a limit; set-to-null ones never reach here
+// (the plan modifiers force replacement instead).
+func buildUpdateArgs(plan, state *containerResourceModel) []string {
+	var args []string
+	if !plan.Memory.IsNull() && !plan.Memory.Equal(state.Memory) {
+		args = append(args, "--memory", plan.Memory.ValueString())
+	}
+	if !plan.Cpus.IsNull() && !plan.Cpus.Equal(state.Cpus) {
+		// Not --cpus: released nerdctl (through v2.3.4) persists the cpuset
+		// string instead of the quota for that flag, so the change would not
+		// survive inspect. Passing quota/period directly — the same
+		// conversion nerdctl applies to --cpus — persists correctly.
+		quota := int64(plan.Cpus.ValueFloat64() * 100000.0)
+		args = append(args, "--cpu-quota", strconv.FormatInt(quota, 10), "--cpu-period", "100000")
+	}
+	if plan.Restart.ValueString() != state.Restart.ValueString() {
+		args = append(args, "--restart", plan.Restart.ValueString())
+	}
+	if args == nil {
+		return nil
+	}
+	return append(append([]string{"update"}, args...), plan.Name.ValueString())
 }
 
 func (r *containerResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
