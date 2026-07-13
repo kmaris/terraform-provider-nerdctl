@@ -20,6 +20,18 @@ func minimalContainerModel() containerResourceModel {
 		Image:         types.StringValue("traefik:v3"),
 		Restart:       types.StringValue("unless-stopped"),
 		Privileged:    types.BoolValue(false),
+		ReadOnly:      types.BoolValue(false),
+		SecurityOpt:   types.ListNull(types.StringType),
+		GroupAdd:      types.ListNull(types.StringType),
+		Devices:       types.ListNull(deviceObjectType),
+		Ulimits:       types.ListNull(ulimitObjectType),
+		ShmSize:       types.StringNull(),
+		Pid:           types.StringNull(),
+		Ipc:           types.StringNull(),
+		Init:          types.BoolNull(),
+		StopSignal:    types.StringNull(),
+		StopTimeout:   types.Int64Null(),
+		Platform:      types.StringNull(),
 		LogDriver:     types.StringValue("json-file"),
 		Command:       types.ListNull(types.StringType),
 		CapAdd:        types.ListNull(types.StringType),
@@ -96,6 +108,31 @@ func TestBuildRunArgsFull(t *testing.T) {
 	plan.Privileged = types.BoolValue(true)
 	plan.CapAdd = mustList(t, types.StringType, []string{"NET_ADMIN", "SYS_TIME"})
 	plan.CapDrop = mustList(t, types.StringType, []string{"MKNOD"})
+	plan.ReadOnly = types.BoolValue(true)
+	plan.SecurityOpt = mustList(t, types.StringType, []string{"no-new-privileges"})
+	plan.GroupAdd = mustList(t, types.StringType, []string{"video", "1000"})
+	plan.Devices = mustList(t, deviceObjectType, []deviceModel{
+		{
+			HostPath:      types.StringValue("/dev/fuse"),
+			ContainerPath: types.StringNull(),
+			Permissions:   types.StringValue("rwm"),
+		},
+		{
+			HostPath:      types.StringValue("/dev/null"),
+			ContainerPath: types.StringValue("/dev/testnull"),
+			Permissions:   types.StringValue("rw"),
+		},
+	})
+	plan.Ulimits = mustList(t, ulimitObjectType, []ulimitModel{
+		{Name: types.StringValue("nofile"), Soft: types.Int64Value(1024), Hard: types.Int64Value(2048)},
+	})
+	plan.ShmSize = types.StringValue("128m")
+	plan.Pid = types.StringValue("host")
+	plan.Ipc = types.StringValue("private")
+	plan.Init = types.BoolValue(true)
+	plan.StopSignal = types.StringValue("SIGQUIT")
+	plan.StopTimeout = types.Int64Value(5)
+	plan.Platform = types.StringValue("linux/amd64")
 	plan.Sysctls = mustMap(t, map[string]string{"net.core.somaxconn": "512"})
 	plan.Tmpfs = mustMap(t, map[string]string{"/scratch": "", "/run": "size=64m"})
 	plan.LogDriver = types.StringValue("journald")
@@ -170,6 +207,20 @@ func TestBuildRunArgsFull(t *testing.T) {
 		"--cap-add", "NET_ADMIN",
 		"--cap-add", "SYS_TIME",
 		"--cap-drop", "MKNOD",
+		"--read-only",
+		"--security-opt", "no-new-privileges",
+		"--group-add", "video",
+		"--group-add", "1000",
+		"--device", "/dev/fuse:/dev/fuse:rwm", // null container_path defaults to host_path
+		"--device", "/dev/null:/dev/testnull:rw",
+		"--ulimit", "nofile=1024:2048",
+		"--shm-size", "128m",
+		"--pid", "host",
+		"--ipc", "private",
+		"--init",
+		"--stop-signal", "SIGQUIT",
+		"--stop-timeout", "5",
+		"--platform", "linux/amd64",
 		"--sysctl", "net.core.somaxconn=512",
 		"--tmpfs", "/run:size=64m", // map keys sorted; empty options omit the colon
 		"--tmpfs", "/scratch",
@@ -479,6 +530,142 @@ func TestRefreshExtraHosts(t *testing.T) {
 	}
 	if !state.ExtraHosts.IsNull() {
 		t.Errorf("ExtraHosts = %v, want null", state.ExtraHosts)
+	}
+}
+
+func TestRefreshDevices(t *testing.T) {
+	// Inspect reports only user-passed devices, so the refresh fills
+	// unmanaged state (import) and compares null container_path as the
+	// host path without dirtying state.
+	info := &containerInspect{}
+	info.HostConfig.Devices = []struct {
+		PathOnHost        string `json:"PathOnHost"`
+		PathInContainer   string `json:"PathInContainer"`
+		CgroupPermissions string `json:"CgroupPermissions"`
+	}{{PathOnHost: "/dev/fuse", PathInContainer: "/dev/fuse", CgroupPermissions: "rwm"}}
+
+	state := minimalContainerModel()
+	state.Devices = mustList(t, deviceObjectType, []deviceModel{{
+		HostPath:      types.StringValue("/dev/fuse"),
+		ContainerPath: types.StringNull(),
+		Permissions:   types.StringValue("rwm"),
+	}})
+	before := state.Devices
+	if diags := refreshDevices(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshDevices: %v", diags)
+	}
+	if !state.Devices.Equal(before) {
+		t.Errorf("Devices dirtied on semantic match: %v", state.Devices)
+	}
+
+	// Out-of-band removal nulls the list.
+	info.HostConfig.Devices = nil
+	if diags := refreshDevices(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshDevices: %v", diags)
+	}
+	if !state.Devices.IsNull() {
+		t.Errorf("Devices = %v, want null", state.Devices)
+	}
+}
+
+func TestRefreshUlimitsManagedOnly(t *testing.T) {
+	// Runtime-default ulimits in inspect output must not surface on an
+	// unmanaged attribute...
+	info := &containerInspect{}
+	info.HostConfig.Ulimits = []struct {
+		Name string `json:"Name"`
+		Soft int64  `json:"Soft"`
+		Hard int64  `json:"Hard"`
+	}{{Name: "nofile", Soft: 1024, Hard: 4096}}
+
+	state := minimalContainerModel()
+	if diags := refreshUlimits(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshUlimits: %v", diags)
+	}
+	if !state.Ulimits.IsNull() {
+		t.Errorf("Ulimits = %v, want null", state.Ulimits)
+	}
+
+	// ...but a managed list tracks real drift.
+	state.Ulimits = mustList(t, ulimitObjectType, []ulimitModel{
+		{Name: types.StringValue("nofile"), Soft: types.Int64Value(1024), Hard: types.Int64Value(2048)},
+	})
+	if diags := refreshUlimits(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshUlimits: %v", diags)
+	}
+	var got []ulimitModel
+	if diags := state.Ulimits.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("reading ulimits: %v", diags)
+	}
+	if len(got) != 1 || got[0].Hard.ValueInt64() != 4096 {
+		t.Errorf("Ulimits = %v, want hard=4096", got)
+	}
+}
+
+func TestRefreshShmSizeManagedOnly(t *testing.T) {
+	info := &containerInspect{}
+	info.HostConfig.ShmSize = 64 << 20
+
+	// Unmanaged stays null even though inspect reports the runtime default.
+	state := minimalContainerModel()
+	if diags := refreshShmSize(&state, info); diags.HasError() {
+		t.Fatalf("refreshShmSize: %v", diags)
+	}
+	if !state.ShmSize.IsNull() {
+		t.Errorf("ShmSize = %v, want null", state.ShmSize)
+	}
+
+	// A managed value compares semantically and keeps its spelling.
+	state.ShmSize = types.StringValue("64m")
+	if diags := refreshShmSize(&state, info); diags.HasError() {
+		t.Fatalf("refreshShmSize: %v", diags)
+	}
+	if got := state.ShmSize.ValueString(); got != "64m" {
+		t.Errorf("ShmSize = %q, want 64m", got)
+	}
+
+	// Real drift stores the byte count.
+	info.HostConfig.ShmSize = 96 << 20
+	if diags := refreshShmSize(&state, info); diags.HasError() {
+		t.Fatalf("refreshShmSize: %v", diags)
+	}
+	if got := state.ShmSize.ValueString(); got != "100663296" {
+		t.Errorf("ShmSize = %q, want 100663296", got)
+	}
+}
+
+func TestRefreshStopTimeoutAndPlatform(t *testing.T) {
+	info := &containerInspect{}
+	info.Config.Labels = map[string]string{
+		"nerdctl/stop-timeout": "5",
+		// The platform label is always present, normalized.
+		"nerdctl/platform": "linux/amd64",
+	}
+
+	// stop_timeout fills from its label (import); unmanaged platform stays
+	// null despite the ever-present label.
+	state := minimalContainerModel()
+	refreshStopTimeout(&state, info)
+	refreshManagedString(&state.Platform, info.platform())
+	if got := state.StopTimeout.ValueInt64(); got != 5 {
+		t.Errorf("StopTimeout = %d, want 5", got)
+	}
+	if !state.Platform.IsNull() {
+		t.Errorf("Platform = %v, want null", state.Platform)
+	}
+
+	// A managed platform tracks the normalized label value.
+	state.Platform = types.StringValue("amd64")
+	refreshManagedString(&state.Platform, info.platform())
+	if got := state.Platform.ValueString(); got != "linux/amd64" {
+		t.Errorf("Platform = %q, want linux/amd64", got)
+	}
+
+	// A missing stop-timeout label nulls the attribute.
+	info.Config.Labels = map[string]string{}
+	refreshStopTimeout(&state, info)
+	if !state.StopTimeout.IsNull() {
+		t.Errorf("StopTimeout = %v, want null", state.StopTimeout)
 	}
 }
 

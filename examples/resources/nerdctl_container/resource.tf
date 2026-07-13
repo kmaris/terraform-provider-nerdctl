@@ -14,6 +14,24 @@ resource "nerdctl_container" "app" {
   cap_add  = ["net_admin"] # without the CAP_ prefix
   cap_drop = ["mknod"]
 
+  read_only    = true                  # root filesystem; use tmpfs/volumes for writable paths
+  security_opt = ["no-new-privileges"] # also seccomp=<file>, apparmor=<profile>, ...
+  group_add    = ["video"]             # extra groups, by name or GID
+  shm_size     = "128m"                # /dev/shm, 64m when unset
+  pid          = "host"                # or container:<name>
+  init         = true                  # needs an init binary (tini) on the host
+  stop_signal  = "SIGQUIT"             # SIGTERM when unset
+  stop_timeout = 5                     # seconds before the runtime kills it
+  platform     = "linux/amd64"         # use the normalized os/arch form
+
+  devices = [
+    { host_path = "/dev/fuse" }, # container_path defaults to host_path, permissions to rwm
+  ]
+
+  ulimits = [
+    { name = "nofile", soft = 1024, hard = 2048 },
+  ]
+
   sysctls = {
     "net.core.somaxconn" = "1024"
   }

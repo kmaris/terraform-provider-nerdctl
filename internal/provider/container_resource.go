@@ -26,6 +26,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/float64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
@@ -42,6 +43,8 @@ import (
 var (
 	restartPolicyRe = regexp.MustCompile(`^(no|always|unless-stopped|on-failure(:\d+)?)$`)
 	memorySizeRe    = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?[bkmgtBKMGT]?[bB]?$`)
+	pidModeRe       = regexp.MustCompile(`^(host|container:.+)$`)
+	ipcModeRe       = regexp.MustCompile(`^(host|private|shareable|container:.+)$`)
 )
 
 var (
@@ -55,6 +58,16 @@ var (
 		"internal": types.Int64Type,
 		"external": types.Int64Type,
 		"protocol": types.StringType,
+	}}
+	deviceObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+		"host_path":      types.StringType,
+		"container_path": types.StringType,
+		"permissions":    types.StringType,
+	}}
+	ulimitObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
+		"name": types.StringType,
+		"soft": types.Int64Type,
+		"hard": types.Int64Type,
 	}}
 	volumeObjectType = types.ObjectType{AttrTypes: map[string]attr.Type{
 		"container_path": types.StringType,
@@ -90,6 +103,18 @@ type containerResourceModel struct {
 	Memory        types.String  `tfsdk:"memory"`
 	Cpus          types.Float64 `tfsdk:"cpus"`
 	Privileged    types.Bool    `tfsdk:"privileged"`
+	ReadOnly      types.Bool    `tfsdk:"read_only"`
+	SecurityOpt   types.List    `tfsdk:"security_opt"`
+	GroupAdd      types.List    `tfsdk:"group_add"`
+	Devices       types.List    `tfsdk:"devices"`
+	Ulimits       types.List    `tfsdk:"ulimits"`
+	ShmSize       types.String  `tfsdk:"shm_size"`
+	Pid           types.String  `tfsdk:"pid"`
+	Ipc           types.String  `tfsdk:"ipc"`
+	Init          types.Bool    `tfsdk:"init"`
+	StopSignal    types.String  `tfsdk:"stop_signal"`
+	StopTimeout   types.Int64   `tfsdk:"stop_timeout"`
+	Platform      types.String  `tfsdk:"platform"`
 	CapAdd        types.List    `tfsdk:"cap_add"`
 	CapDrop       types.List    `tfsdk:"cap_drop"`
 	Sysctls       types.Map     `tfsdk:"sysctls"`
@@ -125,6 +150,18 @@ type portModel struct {
 	Internal types.Int64  `tfsdk:"internal"`
 	External types.Int64  `tfsdk:"external"`
 	Protocol types.String `tfsdk:"protocol"`
+}
+
+type deviceModel struct {
+	HostPath      types.String `tfsdk:"host_path"`
+	ContainerPath types.String `tfsdk:"container_path"`
+	Permissions   types.String `tfsdk:"permissions"`
+}
+
+type ulimitModel struct {
+	Name types.String `tfsdk:"name"`
+	Soft types.Int64  `tfsdk:"soft"`
+	Hard types.Int64  `tfsdk:"hard"`
 }
 
 type volumeMountModel struct {
@@ -208,6 +245,117 @@ func (r *containerResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 				Default:       booldefault.StaticBool(false),
 				Description:   "Run with extended privileges (`--privileged`). Capabilities are not tracked on privileged containers, which hold all of them.",
 				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+			},
+			"read_only": schema.BoolAttribute{
+				Optional:      true,
+				Computed:      true,
+				Default:       booldefault.StaticBool(false),
+				Description:   "Mount the container's root filesystem read-only (`--read-only`). Writable paths need `tmpfs` or `volumes` entries.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+			},
+			"security_opt": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Security options passed with `--security-opt`, e.g. `no-new-privileges`, `seccomp=<profile.json>`, `apparmor=<profile>`. Drift is not detected (absent from inspect output).",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"group_add": schema.ListAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Additional groups to join, by name or GID, passed with `--group-add`. Drift is not detected: inspect output merges these into the user's default supplementary groups.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+			},
+			"devices": schema.ListNestedAttribute{
+				Optional:      true,
+				Description:   "Host devices to expose, passed with `--device`. Rootless hosts can only expose devices the user already has permission to open, and cannot remap paths: `container_path` must match `host_path` (runc binds the device node from the container path).",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"host_path": schema.StringAttribute{
+							Required:    true,
+							Description: "Device path on the host, e.g. `/dev/fuse`.",
+						},
+						"container_path": schema.StringAttribute{
+							Optional:    true,
+							Description: "Device path inside the container. Defaults to `host_path`.",
+						},
+						"permissions": schema.StringAttribute{
+							Optional:    true,
+							Computed:    true,
+							Default:     stringdefault.StaticString("rwm"),
+							Description: "Cgroup permissions: some combination of `r` (read), `w` (write), `m` (mknod). Defaults to `rwm`.",
+							Validators: []validator.String{
+								stringvalidator.RegexMatches(regexp.MustCompile(`^[rwm]{1,3}$`), "must be a combination of r, w, and m"),
+							},
+						},
+					},
+				},
+			},
+			"ulimits": schema.ListNestedAttribute{
+				Optional:      true,
+				Description:   "Resource limits passed with `--ulimit`. When unset, the runtime defaults apply and drift is not detected.",
+				PlanModifiers: []planmodifier.List{listplanmodifier.RequiresReplace()},
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"name": schema.StringAttribute{
+							Required:    true,
+							Description: "Limit name, e.g. `nofile` or `nproc`.",
+						},
+						"soft": schema.Int64Attribute{
+							Required:    true,
+							Description: "Soft limit.",
+						},
+						"hard": schema.Int64Attribute{
+							Required:    true,
+							Description: "Hard limit.",
+						},
+					},
+				},
+			},
+			"shm_size": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Size of `/dev/shm` as a docker-style size, e.g. `128m`, passed with `--shm-size`. When unset, the 64m default applies and drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(memorySizeRe, "must be a size like 512m, 2g, or 1073741824"),
+				},
+			},
+			"pid": schema.StringAttribute{
+				Optional:      true,
+				Description:   "PID namespace: `host` or `container:<name|id>`, passed with `--pid`. Drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(pidModeRe, "must be host or container:<name|id>"),
+				},
+			},
+			"ipc": schema.StringAttribute{
+				Optional:      true,
+				Description:   "IPC namespace: `host`, `private`, `shareable`, or `container:<name|id>`, passed with `--ipc`. Drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(ipcModeRe, "must be host, private, shareable, or container:<name|id>"),
+				},
+			},
+			"init": schema.BoolAttribute{
+				Optional:      true,
+				Description:   "Run an init that forwards signals and reaps processes (`--init`). Requires an init binary (tini) on the host. Drift is not detected.",
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.RequiresReplace()},
+			},
+			"stop_signal": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Signal used to stop the container, e.g. `SIGQUIT`. Defaults to `SIGTERM`. Drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"stop_timeout": schema.Int64Attribute{
+				Optional:      true,
+				Description:   "Seconds to wait after `stop_signal` before the runtime kills the container, passed with `--stop-timeout`.",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+				Validators:    []validator.Int64{int64validator.AtLeast(1)},
+			},
+			"platform": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Image platform, passed with `--platform`. Use the normalized `os/arch` form, e.g. `linux/amd64`: nerdctl records the normalized value, so other spellings show one-time drift.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"cap_add": schema.ListAttribute{
 				ElementType:   types.StringType,
@@ -596,6 +744,19 @@ func (r *containerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	refreshPrivileged(&state, info)
 	resp.Diagnostics.Append(refreshCaps(ctx, &state.CapAdd, info.HostConfig.CapAdd, info.HostConfig.Privileged)...)
 	resp.Diagnostics.Append(refreshCaps(ctx, &state.CapDrop, info.HostConfig.CapDrop, info.HostConfig.Privileged)...)
+
+	// security_opt, pid, ipc, init, and stop_signal are config-only: neither
+	// inspect output nor labels expose them. group_add is too: inspect
+	// merges it into the user's default supplementary groups.
+	refreshReadOnly(&state, info)
+	resp.Diagnostics.Append(refreshDevices(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshUlimits(ctx, &state, info)...)
+	resp.Diagnostics.Append(refreshShmSize(&state, info)...)
+	refreshStopTimeout(&state, info)
+	// The platform label is always set (normalized), so an unmanaged
+	// platform must stay null rather than fill with the host default.
+	refreshManagedString(&state.Platform, info.platform())
+
 	resp.Diagnostics.Append(refreshSysctls(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshTmpfs(ctx, &state, info)...)
 	resp.Diagnostics.Append(refreshLogConfig(ctx, &state, info)...)
@@ -771,6 +932,118 @@ func refreshPrivileged(state *containerResourceModel, info *containerInspect) {
 	actual := info.HostConfig.Privileged
 	if state.Privileged.IsNull() || state.Privileged.ValueBool() != actual {
 		state.Privileged = types.BoolValue(actual)
+	}
+}
+
+// refreshReadOnly mirrors refreshPrivileged: computed with a default, so it
+// always holds a concrete value.
+func refreshReadOnly(state *containerResourceModel, info *containerInspect) {
+	actual := info.HostConfig.ReadonlyRootfs
+	if state.ReadOnly.IsNull() || state.ReadOnly.ValueBool() != actual {
+		state.ReadOnly = types.BoolValue(actual)
+	}
+}
+
+// refreshDevices overwrites state devices when the container's differ.
+// Inspect reports only user-passed devices (from the nerdctl/host-config
+// label), so unmanaged and imported containers refresh correctly.
+func refreshDevices(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	actual := info.deviceModels()
+
+	var current []deviceModel
+	if !state.Devices.IsNull() {
+		diags.Append(state.Devices.ElementsAs(ctx, &current, false)...)
+		if diags.HasError() {
+			return diags
+		}
+	}
+	if deviceSetsEqual(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Devices = types.ListNull(deviceObjectType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, deviceObjectType, actual)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	state.Devices = l
+	return diags
+}
+
+// refreshUlimits tracks drift only when the config manages ulimits: the OCI
+// spec carries runtime defaults that inspect cannot distinguish from
+// explicit configuration (the shm_size rule).
+func refreshUlimits(ctx context.Context, state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if state.Ulimits.IsNull() {
+		return diags
+	}
+	var current []ulimitModel
+	diags.Append(state.Ulimits.ElementsAs(ctx, &current, false)...)
+	if diags.HasError() {
+		return diags
+	}
+	actual := info.ulimitModels()
+	if ulimitSetsEqual(current, actual) {
+		return diags
+	}
+	if len(actual) == 0 {
+		state.Ulimits = types.ListNull(ulimitObjectType)
+		return diags
+	}
+	l, d := types.ListValueFrom(ctx, ulimitObjectType, actual)
+	diags.Append(d...)
+	if diags.HasError() {
+		return diags
+	}
+	state.Ulimits = l
+	return diags
+}
+
+// refreshShmSize compares semantically like refreshMemory, but only when the
+// config manages it: an unset shm_size means the runtime's 64m default,
+// which inspect cannot distinguish from an explicit 64m.
+func refreshShmSize(state *containerResourceModel, info *containerInspect) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if state.ShmSize.IsNull() {
+		return diags
+	}
+	current, err := parseMemoryBytes(state.ShmSize.ValueString())
+	if err != nil {
+		diags.AddError("Invalid shm_size value in state", err.Error())
+		return diags
+	}
+	actual := info.HostConfig.ShmSize
+	if current == actual {
+		return diags
+	}
+	if actual == 0 {
+		state.ShmSize = types.StringNull()
+		return diags
+	}
+	state.ShmSize = types.StringValue(strconv.FormatInt(actual, 10))
+	return diags
+}
+
+// refreshStopTimeout reads the nerdctl/stop-timeout label, which exists only
+// when --stop-timeout was passed, so it also fills imports and nulls
+// out-of-band removals (the refreshLabelString rule).
+func refreshStopTimeout(state *containerResourceModel, info *containerInspect) {
+	raw := info.stopTimeout()
+	if raw == "" {
+		state.StopTimeout = types.Int64Null()
+		return
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return
+	}
+	if state.StopTimeout.IsNull() || state.StopTimeout.ValueInt64() != v {
+		state.StopTimeout = types.Int64Value(v)
 	}
 }
 
@@ -1189,9 +1462,12 @@ func (r *containerResource) waitContainerGone(ctx context.Context, name string) 
 
 // ImportState imports by container name, e.g.
 // `terraform import nerdctl_container.app app`. Read recovers every
-// attribute except command, which is not present in inspect output, and
-// healthcheck, which is indistinguishable from an image-defined one — set
-// those in config to match the running container before applying.
+// attribute except command (not present in inspect output), healthcheck
+// (indistinguishable from an image-defined one), the config-only attributes
+// (security_opt, group_add, pid, ipc, init, stop_signal), and shm_size,
+// ulimits, and platform, whose runtime defaults are indistinguishable from
+// explicit config — set those to match the running container before
+// applying.
 func (r *containerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
@@ -1241,6 +1517,77 @@ func buildRunArgs(ctx context.Context, plan *containerResourceModel) ([]string, 
 		for _, c := range caps {
 			args = append(args, cl.flag, c)
 		}
+	}
+
+	if plan.ReadOnly.ValueBool() {
+		args = append(args, "--read-only")
+	}
+
+	for _, sl := range []struct {
+		flag string
+		list types.List
+	}{{"--security-opt", plan.SecurityOpt}, {"--group-add", plan.GroupAdd}} {
+		if sl.list.IsNull() {
+			continue
+		}
+		var vals []string
+		diags.Append(sl.list.ElementsAs(ctx, &vals, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, v := range vals {
+			args = append(args, sl.flag, v)
+		}
+	}
+
+	if !plan.Devices.IsNull() {
+		var devices []deviceModel
+		diags.Append(plan.Devices.ElementsAs(ctx, &devices, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		// Always emit the full three-part spec: a two-part one is ambiguous
+		// (the second segment could be a path or permissions).
+		for _, d := range devices {
+			cp := d.ContainerPath.ValueString()
+			if cp == "" {
+				cp = d.HostPath.ValueString()
+			}
+			args = append(args, "--device", d.HostPath.ValueString()+":"+cp+":"+d.Permissions.ValueString())
+		}
+	}
+
+	if !plan.Ulimits.IsNull() {
+		var ulimits []ulimitModel
+		diags.Append(plan.Ulimits.ElementsAs(ctx, &ulimits, false)...)
+		if diags.HasError() {
+			return nil, diags
+		}
+		for _, u := range ulimits {
+			args = append(args, "--ulimit", fmt.Sprintf("%s=%d:%d", u.Name.ValueString(), u.Soft.ValueInt64(), u.Hard.ValueInt64()))
+		}
+	}
+
+	if v := plan.ShmSize.ValueString(); v != "" {
+		args = append(args, "--shm-size", v)
+	}
+	if v := plan.Pid.ValueString(); v != "" {
+		args = append(args, "--pid", v)
+	}
+	if v := plan.Ipc.ValueString(); v != "" {
+		args = append(args, "--ipc", v)
+	}
+	if plan.Init.ValueBool() {
+		args = append(args, "--init")
+	}
+	if v := plan.StopSignal.ValueString(); v != "" {
+		args = append(args, "--stop-signal", v)
+	}
+	if !plan.StopTimeout.IsNull() {
+		args = append(args, "--stop-timeout", strconv.FormatInt(plan.StopTimeout.ValueInt64(), 10))
+	}
+	if v := plan.Platform.ValueString(); v != "" {
+		args = append(args, "--platform", v)
 	}
 
 	args, diags = appendMapFlags(ctx, args, diags, "--sysctl", plan.Sysctls)
