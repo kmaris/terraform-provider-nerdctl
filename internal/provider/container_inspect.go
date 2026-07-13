@@ -27,17 +27,29 @@ type containerInspect struct {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
-		Memory     int64             `json:"Memory"`
-		CPUQuota   int64             `json:"CPUQuota"`
-		CPUPeriod  uint64            `json:"CPUPeriod"`
-		DNS        []string          `json:"Dns"`
-		DNSOptions []string          `json:"DnsOptions"`
-		DNSSearch  []string          `json:"DnsSearch"`
-		Privileged bool              `json:"Privileged"`
-		CapAdd     []string          `json:"CapAdd"`
-		CapDrop    []string          `json:"CapDrop"`
-		Sysctls    map[string]string `json:"Sysctls"`
-		Tmpfs      map[string]string `json:"Tmpfs"`
+		Memory         int64             `json:"Memory"`
+		CPUQuota       int64             `json:"CPUQuota"`
+		CPUPeriod      uint64            `json:"CPUPeriod"`
+		DNS            []string          `json:"Dns"`
+		DNSOptions     []string          `json:"DnsOptions"`
+		DNSSearch      []string          `json:"DnsSearch"`
+		Privileged     bool              `json:"Privileged"`
+		CapAdd         []string          `json:"CapAdd"`
+		CapDrop        []string          `json:"CapDrop"`
+		Sysctls        map[string]string `json:"Sysctls"`
+		Tmpfs          map[string]string `json:"Tmpfs"`
+		ShmSize        int64             `json:"ShmSize"`
+		ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
+		Devices        []struct {
+			PathOnHost        string `json:"PathOnHost"`
+			PathInContainer   string `json:"PathInContainer"`
+			CgroupPermissions string `json:"CgroupPermissions"`
+		} `json:"Devices"`
+		Ulimits []struct {
+			Name string `json:"Name"`
+			Soft int64  `json:"Soft"`
+			Hard int64  `json:"Hard"`
+		} `json:"Ulimits"`
 		// LogConfig keys are lowercase in dockercompat output, unlike the
 		// rest of HostConfig.
 		LogConfig struct {
@@ -221,6 +233,75 @@ func (ci *containerInspect) portModels() ([]portModel, error) {
 	})
 	return out, nil
 }
+
+// deviceModels recovers --device flags from inspect output (nerdctl derives
+// them from its host-config label, so only user-passed devices appear).
+// Sorted by host path for determinism.
+func (ci *containerInspect) deviceModels() []deviceModel {
+	var out []deviceModel
+	for _, d := range ci.HostConfig.Devices {
+		perms := d.CgroupPermissions
+		if perms == "" {
+			perms = "rwm"
+		}
+		cp := d.PathInContainer
+		if cp == "" {
+			cp = d.PathOnHost
+		}
+		out = append(out, deviceModel{
+			HostPath:      types.StringValue(d.PathOnHost),
+			ContainerPath: types.StringValue(cp),
+			Permissions:   types.StringValue(perms),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].HostPath.ValueString() < out[j].HostPath.ValueString()
+	})
+	return out
+}
+
+// deviceSetsEqual compares device lists ignoring order. A null
+// container_path counts as the host path, matching the CLI default.
+func deviceSetsEqual(a, b []deviceModel) bool {
+	key := func(d deviceModel) string {
+		cp := d.ContainerPath.ValueString()
+		if cp == "" {
+			cp = d.HostPath.ValueString()
+		}
+		return d.HostPath.ValueString() + "|" + cp + "|" + d.Permissions.ValueString()
+	}
+	return keySetsEqual(a, b, key)
+}
+
+// ulimitModels recovers --ulimit flags, sorted by name for determinism.
+func (ci *containerInspect) ulimitModels() []ulimitModel {
+	var out []ulimitModel
+	for _, u := range ci.HostConfig.Ulimits {
+		out = append(out, ulimitModel{
+			Name: types.StringValue(u.Name),
+			Soft: types.Int64Value(u.Soft),
+			Hard: types.Int64Value(u.Hard),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name.ValueString() < out[j].Name.ValueString()
+	})
+	return out
+}
+
+// ulimitSetsEqual compares ulimit lists ignoring order.
+func ulimitSetsEqual(a, b []ulimitModel) bool {
+	key := func(u ulimitModel) string {
+		return fmt.Sprintf("%s|%d|%d", u.Name.ValueString(), u.Soft.ValueInt64(), u.Hard.ValueInt64())
+	}
+	return keySetsEqual(a, b, key)
+}
+
+// stopTimeout and platform recover their flags from labels. nerdctl writes
+// nerdctl/stop-timeout only when the flag was passed, but nerdctl/platform
+// always, normalized — so platform must be refreshed managed-only.
+func (ci *containerInspect) stopTimeout() string { return ci.Config.Labels["nerdctl/stop-timeout"] }
+func (ci *containerInspect) platform() string    { return ci.Config.Labels["nerdctl/platform"] }
 
 // staticIP, staticIP6, and macAddress recover the --ip, --ip6, and
 // --mac-address flags, which nerdctl persists verbatim in labels. Empty

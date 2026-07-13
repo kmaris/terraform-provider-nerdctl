@@ -195,6 +195,24 @@ resource "nerdctl_container" "app" {
   memory     = "512m" # docker-style size
   cpus       = 1.5    # cores
 
+  read_only    = true                  # root filesystem; use tmpfs/volumes for writable paths
+  security_opt = ["no-new-privileges"] # also seccomp=<file>, apparmor=<profile>, ...
+  group_add    = ["video"]             # extra groups, by name or GID
+  shm_size     = "128m"                # /dev/shm, 64m when unset
+  pid          = "host"                # or container:<name>
+  init         = true                  # needs an init binary (tini) on the host
+  stop_signal  = "SIGQUIT"             # SIGTERM when unset
+  stop_timeout = 5                     # seconds before the runtime kills it
+  platform     = "linux/amd64"         # use the normalized os/arch form
+
+  devices = [
+    { host_path = "/dev/fuse" }, # container_path defaults to host_path, permissions to rwm
+  ]
+
+  ulimits = [
+    { name = "nofile", soft = 1024, hard = 2048 },
+  ]
+
   networks    = [nerdctl_network.app.name] # default bridge when unset
   ip          = "10.5.0.5"                  # static IPv4; needs a known subnet
   mac_address = "02:ac:ce:55:00:01"         # bridge and macvlan networks

@@ -89,6 +89,24 @@ resource "nerdctl_container" "test" {
   cap_add  = ["sys_time"]
   cap_drop = ["net_raw"]
 
+  read_only    = true
+  security_opt = ["no-new-privileges"]
+  group_add    = ["1000"]
+  shm_size     = "96m"
+  pid          = "host"
+  stop_signal  = "SIGQUIT"
+  stop_timeout = 5
+
+  # /dev/null is world-accessible, so this works rootless too. No
+  # container_path remap: rootless runc binds the node from that path.
+  devices = [
+    { host_path = "/dev/null" },
+  ]
+
+  ulimits = [
+    { name = "nofile", soft = 1024, hard = 2048 },
+  ]
+
   # net.ipv4.ip_forward is network-namespaced, so it applies rootless too.
   sysctls = {
     "net.ipv4.ip_forward" = "1"
@@ -167,6 +185,17 @@ resource "nerdctl_container" "test" {
 					resource.TestCheckResourceAttr("nerdctl_container.test", "ip", "10.118.0.10"),
 					resource.TestCheckResourceAttr("nerdctl_container.test", "mac_address", "02:ac:ce:55:00:01"),
 					resource.TestCheckResourceAttr("nerdctl_container.test", "extra_hosts.db.tfacc.internal", "10.118.0.20"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "read_only", "true"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "group_add.0", "1000"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "shm_size", "96m"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "stop_timeout", "5"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "devices.0.host_path", "/dev/null"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "devices.0.permissions", "rwm"),
+					// Unset container_path stays null: the refresh compares
+					// it as host_path without filling it in.
+					resource.TestCheckNoResourceAttr("nerdctl_container.test", "devices.0.container_path"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "ulimits.0.name", "nofile"),
+					resource.TestCheckResourceAttr("nerdctl_container.test", "ulimits.0.hard", "2048"),
 				),
 			},
 		},
@@ -341,6 +370,21 @@ resource "nerdctl_container" "test" {
 			{
 				Config:      fmt.Sprintf(base, `  extra_hosts = { "db" = "not-an-ip" }`),
 				ExpectError: regexp.MustCompile(`must be an IP address`),
+			},
+			{
+				Config:      fmt.Sprintf(base, `  pid = "sometimes"`),
+				ExpectError: regexp.MustCompile(`must be host or container:`),
+			},
+			{
+				Config:      fmt.Sprintf(base, `  shm_size = "12parsecs"`),
+				ExpectError: regexp.MustCompile(`must be a size like`),
+			},
+			{
+				Config: fmt.Sprintf(base, `
+  devices = [
+    { host_path = "/dev/null", permissions = "rwx" },
+  ]`),
+				ExpectError: regexp.MustCompile(`must be a combination of r, w, and m`),
 			},
 		},
 	})
