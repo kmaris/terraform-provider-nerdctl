@@ -152,6 +152,31 @@ reference usable as a container `image`. Built images get theirs at build
 time (a containerd nicety docker lacks), but it resolves from a registry
 only after a push.
 
+### `nerdctl_registry_image`
+
+Pushes a local image (typically a built `nerdctl_image`) to its registry.
+Refresh checks the remote manifest with `nerdctl manifest inspect`
+(requires nerdctl >= 2.3) without pulling, so an image deleted from the
+registry is re-pushed on the next apply. Credentials come from the host's
+`nerdctl login` state.
+
+```hcl
+resource "nerdctl_registry_image" "app" {
+  name = nerdctl_image.app.name # must be tagged with the registry ref
+
+  # Re-push whenever the local image changes.
+  triggers = {
+    image_id = nerdctl_image.app.id
+  }
+
+  # platform / all_platforms select what to push; insecure_registry
+  # allows plain-HTTP registries.
+}
+```
+
+Exports `sha256_digest`, the remote manifest digest. Destroy removes only
+the Terraform state — nerdctl cannot delete from a registry.
+
 ### `nerdctl_volume`
 
 ```hcl
@@ -323,6 +348,16 @@ data "nerdctl_image" "existing" {
 
 data "nerdctl_volume" "existing" {
   name = "app_config" # exports mountpoint
+}
+```
+
+`nerdctl_registry_image` instead reads from the remote registry (via
+`nerdctl manifest inspect`, no pull), exporting the manifest digest — key a
+`nerdctl_image`'s `triggers` on it to re-pull when the remote tag moves:
+
+```hcl
+data "nerdctl_registry_image" "upstream" {
+  name = "traefik:v3" # exports sha256_digest
 }
 ```
 

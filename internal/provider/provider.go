@@ -109,6 +109,7 @@ func (p *nerdctlProvider) Configure(ctx context.Context, req provider.ConfigureR
 func (p *nerdctlProvider) Resources(context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewImageResource,
+		NewRegistryImageResource,
 		NewVolumeResource,
 		NewNetworkResource,
 		NewContainerResource,
@@ -131,6 +132,7 @@ func (p *nerdctlProvider) DataSources(context.Context) []func() datasource.DataS
 	return []func() datasource.DataSource{
 		NewContainerDataSource,
 		NewImageDataSource,
+		NewRegistryImageDataSource,
 		NewVolumeDataSource,
 		NewNetworkDataSource,
 	}
