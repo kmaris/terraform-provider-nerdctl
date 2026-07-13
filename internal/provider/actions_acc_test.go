@@ -128,3 +128,80 @@ action "nerdctl_image_import" "import" {
 		},
 	})
 }
+
+// TestAccActions_containerState drives stop, start, and restart in order
+// through one after_create trigger; the container must end up running.
+func TestAccActions_containerState(t *testing.T) {
+	name := testAccRandomName("tfacc-act")
+	client := testAccClient(t)
+
+	config := testAccProviderConfig() + fmt.Sprintf(`
+resource "nerdctl_image" "nginx" {
+  name = "nginx:alpine"
+}
+
+resource "nerdctl_container" "test" {
+  name  = %q
+  image = nerdctl_image.nginx.name
+
+  lifecycle {
+    action_trigger {
+      events = [after_create]
+      actions = [
+        action.nerdctl_container_stop.stop,
+        action.nerdctl_container_start.start,
+        action.nerdctl_container_restart.restart,
+      ]
+    }
+  }
+}
+
+action "nerdctl_container_stop" "stop" {
+  config {
+    container = nerdctl_container.test.name
+    timeout   = 1
+  }
+}
+
+action "nerdctl_container_start" "start" {
+  config {
+    container = nerdctl_container.test.name
+  }
+}
+
+action "nerdctl_container_restart" "restart" {
+  config {
+    container = nerdctl_container.test.name
+    timeout   = 1
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(version.Must(version.NewVersion("1.14.0"))),
+		},
+		CheckDestroy: testAccComposeGone(
+			testAccCheckGone(t, "container", name),
+			testAccCheckGone(t, "image", "nginx:alpine"),
+		),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: func(_ *terraform.State) error {
+					out, err := client.Run(context.Background(),
+						"inspect", "--format", "{{.State.Running}}", name)
+					if err != nil {
+						return fmt.Errorf("inspecting container after state actions: %v", err)
+					}
+					if out != "true" {
+						return fmt.Errorf("container not running after stop/start/restart cycle: %q", out)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}

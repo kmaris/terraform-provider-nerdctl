@@ -27,4 +27,5 @@ data "nerdctl_volume" "existing" {
 
 ### Read-Only
 
+- `labels` (Map of String) User labels on the volume.
 - `mountpoint` (String) Directory on the host backing the volume.

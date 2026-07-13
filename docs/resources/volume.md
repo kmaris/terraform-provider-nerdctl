@@ -15,6 +15,10 @@ A named volume managed by nerdctl.
 ```terraform
 resource "nerdctl_volume" "config" {
   name = "app_config"
+
+  labels = {
+    "some.label" = "value"
+  }
 }
 ```
 
@@ -24,6 +28,10 @@ resource "nerdctl_volume" "config" {
 ### Required
 
 - `name` (String) Volume name, unique on the host.
+
+### Optional
+
+- `labels` (Map of String) Labels applied with `--label`.
 
 ### Read-Only
 

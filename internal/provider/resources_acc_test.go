@@ -138,6 +138,10 @@ func TestAccVolume_basic(t *testing.T) {
 	config := testAccProviderConfig() + fmt.Sprintf(`
 resource "nerdctl_volume" "test" {
   name = %q
+
+  labels = {
+    "tfacc_label" = "1"
+  }
 }
 `, name)
 
@@ -150,6 +154,7 @@ resource "nerdctl_volume" "test" {
 				Config: config,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("nerdctl_volume.test", "name", name),
+					resource.TestCheckResourceAttr("nerdctl_volume.test", "labels.tfacc_label", "1"),
 					resource.TestCheckResourceAttrSet("nerdctl_volume.test", "mountpoint"),
 				),
 			},
@@ -169,9 +174,14 @@ func TestAccNetwork_basic(t *testing.T) {
 	client := testAccClient(t)
 	config := testAccProviderConfig() + fmt.Sprintf(`
 resource "nerdctl_network" "test" {
-  name    = %q
-  subnet  = "10.117.0.0/24"
-  gateway = "10.117.0.1"
+  name     = %q
+  subnet   = "10.117.0.0/24"
+  gateway  = "10.117.0.1"
+  ip_range = "10.117.0.128/25"
+
+  options = {
+    "mtu" = "1450"
+  }
 
   labels = {
     "tfacc_label" = "1"
@@ -189,6 +199,8 @@ resource "nerdctl_network" "test" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("nerdctl_network.test", "subnet", "10.117.0.0/24"),
 					resource.TestCheckResourceAttr("nerdctl_network.test", "gateway", "10.117.0.1"),
+					resource.TestCheckResourceAttr("nerdctl_network.test", "ip_range", "10.117.0.128/25"),
+					resource.TestCheckResourceAttr("nerdctl_network.test", "options.mtu", "1450"),
 					resource.TestCheckResourceAttr("nerdctl_network.test", "driver", "bridge"),
 					resource.TestCheckResourceAttr("nerdctl_network.test", "labels.tfacc_label", "1"),
 					resource.TestCheckResourceAttrSet("nerdctl_network.test", "id"),
@@ -199,6 +211,8 @@ resource "nerdctl_network" "test" {
 				ImportState:       true,
 				ImportStateId:     name,
 				ImportStateVerify: true,
+				// Config-only attributes are not recoverable on import.
+				ImportStateVerifyIgnore: []string{"ip_range", "options"},
 			},
 			// Out-of-band deletion must plan as a re-create, not an error
 			// (missing networks phrase their error unlike other objects).

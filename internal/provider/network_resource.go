@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -36,12 +36,15 @@ type networkResource struct {
 }
 
 type networkResourceModel struct {
-	Name    types.String `tfsdk:"name"`
-	Driver  types.String `tfsdk:"driver"`
-	Subnet  types.String `tfsdk:"subnet"`
-	Gateway types.String `tfsdk:"gateway"`
-	Labels  types.Map    `tfsdk:"labels"`
-	ID      types.String `tfsdk:"id"`
+	Name       types.String `tfsdk:"name"`
+	Driver     types.String `tfsdk:"driver"`
+	Subnet     types.String `tfsdk:"subnet"`
+	Gateway    types.String `tfsdk:"gateway"`
+	IPRange    types.String `tfsdk:"ip_range"`
+	IPv6Subnet types.String `tfsdk:"ipv6_subnet"`
+	Options    types.Map    `tfsdk:"options"`
+	Labels     types.Map    `tfsdk:"labels"`
+	ID         types.String `tfsdk:"id"`
 }
 
 // networkInspect is the subset of `nerdctl network inspect` output
@@ -94,6 +97,25 @@ func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 					stringvalidator.AlsoRequires(path.MatchRoot("subnet")),
 				},
 			},
+			"ip_range": schema.StringAttribute{
+				Optional:      true,
+				Description:   "Sub-range of `subnet` to allocate container IPs from, in CIDR notation, passed with `--ip-range`. Requires `subnet`. Drift is not detected.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators: []validator.String{
+					stringvalidator.AlsoRequires(path.MatchRoot("subnet")),
+				},
+			},
+			"ipv6_subnet": schema.StringAttribute{
+				Optional:      true,
+				Description:   "IPv6 subnet in CIDR notation, e.g. `fd00:5::/64`. Enables IPv6 (`--ipv6`) and passes the subnet with an additional `--subnet`.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			},
+			"options": schema.MapAttribute{
+				ElementType:   types.StringType,
+				Optional:      true,
+				Description:   "Driver options passed with `-o`, e.g. `{\"mtu\" = \"1450\"}` for bridge, or `parent`/`mode` for macvlan and ipvlan. Not reported by `network inspect`, so drift is not detected.",
+				PlanModifiers: []planmodifier.Map{mapplanmodifier.RequiresReplace()},
+			},
 			"labels": schema.MapAttribute{
 				ElementType:   types.StringType,
 				Optional:      true,
@@ -120,29 +142,11 @@ func (r *networkResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	args := []string{"network", "create", "--driver", plan.Driver.ValueString()}
-	if s := plan.Subnet.ValueString(); s != "" {
-		args = append(args, "--subnet", s)
+	args, diags := networkCreateArgs(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-	if g := plan.Gateway.ValueString(); g != "" {
-		args = append(args, "--gateway", g)
-	}
-	if !plan.Labels.IsNull() {
-		labels := map[string]string{}
-		resp.Diagnostics.Append(plan.Labels.ElementsAs(ctx, &labels, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		keys := make([]string, 0, len(labels))
-		for k := range labels {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "--label", k+"="+labels[k])
-		}
-	}
-	args = append(args, plan.Name.ValueString())
 
 	if _, err := r.client.Run(ctx, args...); err != nil {
 		resp.Diagnostics.AddError("Failed to create network", err.Error())
@@ -155,12 +159,40 @@ func (r *networkResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 	plan.ID = types.StringValue(info.ID)
-	if len(info.IPAM.Config) > 0 {
-		plan.Subnet = types.StringValue(info.IPAM.Config[0].Subnet)
-		plan.Gateway = types.StringValue(info.IPAM.Config[0].Gateway)
+	if subnet, gateway, ok := info.ipv4Config(); ok {
+		plan.Subnet = types.StringValue(subnet)
+		plan.Gateway = types.StringValue(gateway)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// networkCreateArgs builds the `nerdctl network create` argument list.
+// Map-driven flags are sorted by key so the command line is deterministic.
+func networkCreateArgs(ctx context.Context, plan *networkResourceModel) ([]string, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	args := []string{"network", "create", "--driver", plan.Driver.ValueString()}
+	if s := plan.Subnet.ValueString(); s != "" {
+		args = append(args, "--subnet", s)
+	}
+	if g := plan.Gateway.ValueString(); g != "" {
+		args = append(args, "--gateway", g)
+	}
+	if ipr := plan.IPRange.ValueString(); ipr != "" {
+		args = append(args, "--ip-range", ipr)
+	}
+	if v6 := plan.IPv6Subnet.ValueString(); v6 != "" {
+		args = append(args, "--ipv6", "--subnet", v6)
+	}
+	args, diags = appendMapFlags(ctx, args, diags, "-o", plan.Options)
+	if diags.HasError() {
+		return nil, diags
+	}
+	args, diags = appendMapFlags(ctx, args, diags, "--label", plan.Labels)
+	if diags.HasError() {
+		return nil, diags
+	}
+	return append(args, plan.Name.ValueString()), diags
 }
 
 func (r *networkResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -181,9 +213,14 @@ func (r *networkResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 
 	state.ID = types.StringValue(info.ID)
-	if len(info.IPAM.Config) > 0 {
-		state.Subnet = types.StringValue(info.IPAM.Config[0].Subnet)
-		state.Gateway = types.StringValue(info.IPAM.Config[0].Gateway)
+	if subnet, gateway, ok := info.ipv4Config(); ok {
+		state.Subnet = types.StringValue(subnet)
+		state.Gateway = types.StringValue(gateway)
+	}
+	if v6 := info.ipv6Subnet(); v6 != "" {
+		state.IPv6Subnet = types.StringValue(v6)
+	} else {
+		state.IPv6Subnet = types.StringNull()
 	}
 	// The driver is not present in inspect output; assume the default on
 	// import rather than leaving a null that would force a replacement.
@@ -191,7 +228,7 @@ func (r *networkResource) Read(ctx context.Context, req resource.ReadRequest, re
 		state.Driver = types.StringValue("bridge")
 	}
 
-	actual := networkUserLabels(info.Labels)
+	actual := stripNerdctlLabels(info.Labels)
 	current := map[string]string{}
 	if !state.Labels.IsNull() {
 		resp.Diagnostics.Append(state.Labels.ElementsAs(ctx, &current, false)...)
@@ -268,9 +305,31 @@ func parseNetworkInspect(out string) (*networkInspect, error) {
 	return &infos[0], nil
 }
 
-// networkUserLabels drops nerdctl bookkeeping (e.g. nerdctl/default-network
+// ipv4Config returns the first IPv4 IPAM entry, which holds the subnet and
+// gateway; an IPv6-enabled network carries its subnet in a separate entry.
+func (ni *networkInspect) ipv4Config() (subnet, gateway string, ok bool) {
+	for _, c := range ni.IPAM.Config {
+		if c.Subnet != "" && !strings.Contains(c.Subnet, ":") {
+			return c.Subnet, c.Gateway, true
+		}
+	}
+	return "", "", false
+}
+
+// ipv6Subnet returns the first IPv6 IPAM entry's subnet, empty when the
+// network has none.
+func (ni *networkInspect) ipv6Subnet() string {
+	for _, c := range ni.IPAM.Config {
+		if strings.Contains(c.Subnet, ":") {
+			return c.Subnet
+		}
+	}
+	return ""
+}
+
+// stripNerdctlLabels drops nerdctl bookkeeping (e.g. nerdctl/default-network
 // on the default bridge), leaving what the user passed via --label.
-func networkUserLabels(labels map[string]string) map[string]string {
+func stripNerdctlLabels(labels map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range labels {
 		if strings.HasPrefix(k, "nerdctl/") {

@@ -87,7 +87,7 @@ func (d *networkDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		cfg.Subnet = types.StringValue(info.IPAM.Config[0].Subnet)
 		cfg.Gateway = types.StringValue(info.IPAM.Config[0].Gateway)
 	}
-	labels, diags := types.MapValueFrom(ctx, types.StringType, networkUserLabels(info.Labels))
+	labels, diags := types.MapValueFrom(ctx, types.StringType, stripNerdctlLabels(info.Labels))
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
