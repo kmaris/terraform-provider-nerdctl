@@ -30,6 +30,10 @@ func minimalContainerModel() containerResourceModel {
 		Healthcheck:   types.ObjectNull(healthcheckObjectType.AttrTypes),
 		NoHealthcheck: types.BoolNull(),
 		Networks:      types.ListNull(types.StringType),
+		IP:            types.StringNull(),
+		IP6:           types.StringNull(),
+		MacAddress:    types.StringNull(),
+		ExtraHosts:    types.MapNull(types.StringType),
 		DNS:           types.ListNull(types.StringType),
 		DNSOpts:       types.ListNull(types.StringType),
 		DNSSearch:     types.ListNull(types.StringType),
@@ -104,6 +108,13 @@ func TestBuildRunArgsFull(t *testing.T) {
 		Retries:     types.Int64Value(2),
 	})
 	plan.Networks = mustList(t, types.StringType, []string{"app-net", "other-net"})
+	plan.IP = types.StringValue("10.4.0.5")
+	plan.IP6 = types.StringValue("fd00::5")
+	plan.MacAddress = types.StringValue("02:ac:ce:55:00:01")
+	plan.ExtraHosts = mustMap(t, map[string]string{
+		"gw.internal": "host-gateway",
+		"db.internal": "10.4.0.20",
+	})
 	plan.DNS = mustList(t, types.StringType, []string{"8.8.8.8", "1.1.1.1"})
 	plan.DNSOpts = mustList(t, types.StringType, []string{"ndots:2"})
 	plan.DNSSearch = mustList(t, types.StringType, []string{"example.internal"})
@@ -171,6 +182,11 @@ func TestBuildRunArgsFull(t *testing.T) {
 		"--health-start-period", "2s",
 		"--net", "app-net",
 		"--net", "other-net",
+		"--ip", "10.4.0.5",
+		"--ip6", "fd00::5",
+		"--mac-address", "02:ac:ce:55:00:01",
+		"--add-host", "db.internal:10.4.0.20", // map keys sorted
+		"--add-host", "gw.internal:host-gateway",
 		"--dns", "8.8.8.8",
 		"--dns", "1.1.1.1",
 		"--dns-option", "ndots:2",
@@ -402,6 +418,67 @@ func TestRefreshNetworksBridgeDefault(t *testing.T) {
 	}
 	if want := []string{"bridge"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Networks = %v, want %v", got, want)
+	}
+}
+
+func TestRefreshNetworkIdentity(t *testing.T) {
+	// Labels hold the configured --ip/--ip6/--mac-address verbatim, so the
+	// refresh fills unmanaged values (import) and nulls removed ones.
+	info := &containerInspect{}
+	info.Config.Labels = map[string]string{
+		"nerdctl/ip":          "10.4.0.5",
+		"nerdctl/mac-address": "02:ac:ce:55:00:01",
+	}
+	state := minimalContainerModel()
+
+	refreshLabelString(&state.IP, info.staticIP())
+	refreshLabelString(&state.IP6, info.staticIP6())
+	refreshLabelString(&state.MacAddress, info.macAddress())
+
+	if got := state.IP.ValueString(); got != "10.4.0.5" {
+		t.Errorf("IP = %q, want 10.4.0.5", got)
+	}
+	if !state.IP6.IsNull() {
+		t.Errorf("IP6 = %v, want null", state.IP6)
+	}
+	if got := state.MacAddress.ValueString(); got != "02:ac:ce:55:00:01" {
+		t.Errorf("MacAddress = %q, want 02:ac:ce:55:00:01", got)
+	}
+
+	// A container recreated out-of-band without the flags nulls them.
+	refreshLabelString(&state.IP, "")
+	if !state.IP.IsNull() {
+		t.Errorf("IP = %v, want null after label removal", state.IP)
+	}
+}
+
+func TestRefreshExtraHosts(t *testing.T) {
+	info := &containerInspect{}
+	info.Config.Labels = map[string]string{
+		"nerdctl/extraHosts": `["db.internal:10.4.0.20","v6.internal:fd00::20"]`,
+	}
+	state := minimalContainerModel()
+
+	if diags := refreshExtraHosts(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshExtraHosts: %v", diags)
+	}
+	got := map[string]string{}
+	if diags := state.ExtraHosts.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("reading extra_hosts: %v", diags)
+	}
+	// IPv6 values survive the first-colon cut.
+	want := map[string]string{"db.internal": "10.4.0.20", "v6.internal": "fd00::20"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExtraHosts = %v, want %v", got, want)
+	}
+
+	// Matching entries leave state untouched; a missing label nulls it.
+	info.Config.Labels = map[string]string{}
+	if diags := refreshExtraHosts(context.Background(), &state, info); diags.HasError() {
+		t.Fatalf("refreshExtraHosts: %v", diags)
+	}
+	if !state.ExtraHosts.IsNull() {
+		t.Errorf("ExtraHosts = %v, want null", state.ExtraHosts)
 	}
 }
 

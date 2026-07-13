@@ -51,7 +51,13 @@ resource "nerdctl_container" "app" {
     retries      = 3 # default
   }
 
-  networks = [nerdctl_network.app.name] # default bridge when unset
+  networks    = [nerdctl_network.app.name] # default bridge when unset
+  ip          = "10.5.0.5"                  # static IPv4; needs a known subnet
+  mac_address = "02:ac:ce:55:00:01"         # bridge and macvlan networks
+
+  extra_hosts = {
+    "db.internal" = "10.5.0.20" # /etc/hosts entries; "host-gateway" works too
+  }
 
   dns        = ["1.1.1.1"] # host resolver config when unset
   dns_opts   = ["ndots:2"]
@@ -96,13 +102,17 @@ resource "nerdctl_container" "app" {
 - `dns_search` (List of String) DNS search domains for short-name lookups, passed with `--dns-search`.
 - `entrypoint` (String) Overrides the image entrypoint binary. As with `command`, drift is not detected.
 - `env` (Map of String) Environment variables passed with `-e`. Variables the image already defines with the same value are treated as image-provided, not managed.
+- `extra_hosts` (Map of String) Extra `/etc/hosts` entries keyed by hostname, each passed as `--add-host host:ip`. The special value `host-gateway` resolves to the host's gateway address.
 - `healthcheck` (Attributes) Health check run inside the container. Requires nerdctl >= 2.1.5. When unset, the image healthcheck (if any) applies and drift is not detected; the same applies after `terraform import`. (see [below for nested schema](#nestedatt--healthcheck))
 - `hostname` (String) Container hostname. When unset, the runtime default applies and drift is not detected.
+- `ip` (String) Static IPv4 address, passed with `--ip`. The network must have a known subnet, e.g. a `nerdctl_network` with `subnet` set; unlike docker, nerdctl also allows this on the default bridge.
+- `ip6` (String) Static IPv6 address, passed with `--ip6`. Requires an IPv6-enabled network.
 - `labels` (Map of String) Labels applied with `--label`.
 - `log_driver` (String) Logging driver passed with `--log-driver`. `none` is not offered: inspect output cannot distinguish it from the default, so it would drift on every plan.
 - `log_opts` (Map of String) Driver-specific logging options passed with `--log-opt`, e.g. `max-size`.
+- `mac_address` (String) Container MAC address, passed with `--mac-address`. Supported on `bridge` and `macvlan` networks; uniqueness is not checked.
 - `memory` (String) Memory limit as a docker-style size, e.g. `512m` or `2g`. Rootless hosts need cgroup v2 delegation.
-- `networks` (List of String) Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset.
+- `networks` (List of String) Networks to attach, e.g. `nerdctl_network` names. Runs on the default bridge when unset. Containers on the same named network resolve each other by container name (nerdctl has no `--network-alias`).
 - `no_healthcheck` (Boolean) Disable any healthcheck defined by the image, passed with `--no-healthcheck`. Conflicts with `healthcheck`.
 - `ports` (Attributes List) Ports published with `-p`. Rootless hosts cannot bind external ports below 1024. (see [below for nested schema](#nestedatt--ports))
 - `privileged` (Boolean) Run with extended privileges (`--privileged`). Capabilities are not tracked on privileged containers, which hold all of them.

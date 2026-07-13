@@ -222,6 +222,36 @@ func (ci *containerInspect) portModels() ([]portModel, error) {
 	return out, nil
 }
 
+// staticIP, staticIP6, and macAddress recover the --ip, --ip6, and
+// --mac-address flags, which nerdctl persists verbatim in labels. Empty
+// means the flag was not passed.
+func (ci *containerInspect) staticIP() string   { return ci.Config.Labels["nerdctl/ip"] }
+func (ci *containerInspect) staticIP6() string  { return ci.Config.Labels["nerdctl/ip6"] }
+func (ci *containerInspect) macAddress() string { return ci.Config.Labels["nerdctl/mac-address"] }
+
+// extraHosts recovers --add-host entries from the nerdctl/extraHosts label,
+// a JSON array of "host:ip" strings, keyed by hostname. The cut is at the
+// first colon: hostnames cannot contain one, IPv6 addresses can.
+func (ci *containerInspect) extraHosts() map[string]string {
+	raw := ci.Config.Labels["nerdctl/extraHosts"]
+	if raw == "" {
+		return nil
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		host, ip, ok := strings.Cut(e, ":")
+		if !ok {
+			continue
+		}
+		out[host] = ip
+	}
+	return out
+}
+
 // networks recovers the networks the container was attached to from the
 // nerdctl/networks label, in --net order. Nil when the label is missing.
 func (ci *containerInspect) networks() []string {
