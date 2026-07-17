@@ -12,9 +12,9 @@ and port publishing. This provider treats the nerdctl CLI as its contract and
 shells out to it (via `ssh` for remote hosts), parsing `inspect` JSON for
 reads.
 
-**Status: MVP.** Containers are immutable — every attribute change forces a
-replacement (the docker provider does this for most attributes too). Known
-limitations:
+**Status: functional, pre-1.0.** Most container attribute changes force a
+replacement (the docker provider does this for most attributes too);
+`memory`, `cpus`, and `restart` update in place. Known limitations:
 
 - `command` and `entrypoint` drift is not detected: the OCI spec merges
   them, so neither can be recovered from inspect output. `workdir` is absent
@@ -375,13 +375,15 @@ data "nerdctl_registry_image" "upstream" {
 
 ## Importing existing objects
 
-All three resources import by name (the image reference for images):
+Every resource except `nerdctl_registry_image` imports by name (the image
+reference for images, the project name for compose):
 
 ```sh
 terraform import nerdctl_image.traefik traefik:v3
 terraform import nerdctl_volume.config app_config
 terraform import nerdctl_network.app app-net
 terraform import nerdctl_container.app app
+terraform import nerdctl_compose.app app
 ```
 
 Container import recovers every attribute except `command`, `entrypoint`,
@@ -390,6 +392,8 @@ the container was started with any of these, set them in config to match
 before the next apply, or the plan will propose a replacement.
 Anonymous volumes from image `VOLUME` directives are not imported; they are
 image-implied, not configuration.
+Compose import recovers only the project name — read cannot see the compose
+file paths, so set `config_paths` in config to match before applying.
 
 Note that Traefik's docker label discovery does not work against containerd —
 there is no docker socket to watch. Labels are still applied to containers,
