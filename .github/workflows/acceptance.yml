@@ -1,7 +1,8 @@
 name: Acceptance
 
 # Runs the TF_ACC suite against real containerd on the runner itself, in
-# both rootless and rootful modes. Test objects live in the tfacc
+# both rootless and rootful modes, each against the oldest supported
+# nerdctl and the latest release. Test objects live in the tfacc
 # containerd namespace with randomized names; everything is throwaway.
 
 on:
@@ -21,6 +22,15 @@ jobs:
   rootless:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # v2.3.0 is the oldest release the full suite runs on
+        # (nerdctl_registry_image needs `manifest inspect`, 2.3+).
+        # latest resolves at install time to catch upstream breakage
+        # before it reaches users; a red latest cell with a green
+        # pinned cell means nerdctl changed, not this provider.
+        nerdctl: [v2.3.0, latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -29,7 +39,10 @@ jobs:
 
       - name: Install nerdctl-full
         run: |
-          TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          TAG='${{ matrix.nerdctl }}'
+          if [ "$TAG" = latest ]; then
+            TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          fi
           VER=${TAG#v}
           echo "installing nerdctl-full ${VER}"
           curl -fsSL -o /tmp/nerdctl-full.tgz \
@@ -81,6 +94,11 @@ jobs:
   rootful:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same two-cell version matrix as the rootless job.
+        nerdctl: [v2.3.0, latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -89,7 +107,10 @@ jobs:
 
       - name: Install nerdctl-full
         run: |
-          TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          TAG='${{ matrix.nerdctl }}'
+          if [ "$TAG" = latest ]; then
+            TAG=$(curl -fsSL https://api.github.com/repos/containerd/nerdctl/releases/latest | jq -r .tag_name)
+          fi
           VER=${TAG#v}
           echo "installing nerdctl-full ${VER}"
           curl -fsSL -o /tmp/nerdctl-full.tgz \
