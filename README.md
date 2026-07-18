@@ -97,8 +97,12 @@ gate (regenerate + diff) in GitHub Actions. A separate Acceptance workflow
 runs the full `TF_ACC` suite against real containerd on the runner itself,
 in both rootless mode (set up per the rootless-host guide) and rootful mode
 (the nerdctl-full release's bundled containerd, as root), each against two
-nerdctl versions: v2.3.0, the oldest the full suite supports
-(`nerdctl_registry_image` needs 2.3+), and the latest release. A red latest
+nerdctl versions: a pinned floor and the latest release. The suite needs
+nerdctl 2.3+ (`nerdctl_registry_image` uses `manifest inspect`), but the
+pin is v2.3.2 — the oldest nerdctl-full tarball that bundles a stable
+containerd; the v2.3.0/1 tarballs ship containerd v2.3.0-beta.2, whose
+inspect intermittently reports an empty State right after a container
+starts or restarts. A red latest
 cell alongside a green pinned cell points at an upstream nerdctl change
 rather than a provider regression. Pushing a `v*` tag runs
 goreleaser: multi-platform zips, a GPG-signed `SHA256SUMS`, and the registry
