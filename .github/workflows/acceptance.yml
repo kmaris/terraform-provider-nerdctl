@@ -25,12 +25,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # v2.3.0 is the oldest release the full suite runs on
-        # (nerdctl_registry_image needs `manifest inspect`, 2.3+).
+        # The floor for the suite is nerdctl 2.3 (nerdctl_registry_image
+        # needs `manifest inspect`), but the pin is v2.3.2: the v2.3.0/1
+        # nerdctl-full tarballs bundle containerd v2.3.0-beta.2, whose
+        # inspect flaked with empty State right after run/restart.
         # latest resolves at install time to catch upstream breakage
         # before it reaches users; a red latest cell with a green
         # pinned cell means nerdctl changed, not this provider.
-        nerdctl: [v2.3.0, latest]
+        nerdctl: [v2.3.2, latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -98,7 +100,7 @@ jobs:
       fail-fast: false
       matrix:
         # Same two-cell version matrix as the rootless job.
-        nerdctl: [v2.3.0, latest]
+        nerdctl: [v2.3.2, latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
