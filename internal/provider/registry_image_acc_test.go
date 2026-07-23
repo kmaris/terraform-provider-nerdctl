@@ -35,6 +35,7 @@ data "nerdctl_registry_image" "test" {
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
+			testAccSkipBelowNerdctl(t, "2.3.0")
 			ctx := context.Background()
 			if _, err := client.Run(ctx, "run", "-d", "--name", registryName,
 				"-p", "127.0.0.1:"+registryPort+":5000", "registry:2"); err != nil {

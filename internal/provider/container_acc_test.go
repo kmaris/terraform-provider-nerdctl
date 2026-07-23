@@ -227,7 +227,10 @@ resource "nerdctl_container" "test" {
 `, name)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccSkipBelowNerdctl(t, "2.1.5")
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: testAccComposeGone(
 			testAccCheckGone(t, "container", name),
@@ -354,7 +357,10 @@ resource "nerdctl_container" "test" {
 `, name)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccSkipBelowNerdctl(t, "2.1.5")
+		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: testAccComposeGone(
 			testAccCheckGone(t, "container", name),
