@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -103,5 +104,23 @@ func testAccComposeGone(checks ...func(*terraform.State) error) func(*terraform.
 			}
 		}
 		return nil
+	}
+}
+
+// testAccSkipBelowNerdctl skips the test when nerdctl is older than min (ie 2.3.0)
+// Version-gated features call this in PreCheck
+func testAccSkipBelowNerdctl(t *testing.T, minVer string) {
+	t.Helper()
+	client := testAccClient(t)
+	out, err := client.Run(context.Background(), "version", "--format", "{{.Client.Version}}")
+	if err != nil {
+		t.Fatalf("querying nerdctl version: %v", err)
+	}
+	haveVer, err := version.NewVersion(out)
+	if err != nil {
+		t.Fatalf("parsing nerdctl version %q: %v", out, err)
+	}
+	if haveVer.LessThan(version.Must(version.NewVersion(minVer))) {
+		t.Skipf("test needs nerdctl >= %s, host has %s", minVer, out)
 	}
 }
